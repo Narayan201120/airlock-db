@@ -10,6 +10,7 @@ It makes no network requests. The report embeds its CSS and SVG, so it opens on 
 - Reads JSON, JSONL, NDJSON, XML, CSV, and TSV files, plain or compressed (`.gz`, `.zip`), or rows from a local SQLite database.
 - Validates against the built-in financial-transaction model, or any client layout defined in a JSON or YAML config.
 - Drafts a starter layout from the files themselves with `airlock-db infer`, with conflicts marked for review.
+- Reconciles a finished target with its sources: `airlock-db verify` rebuilds every stored row and reports changed, missing, or unexpected records.
 - Never crashes on a bad row. Rejected rows are reported with per-field reasons and the run continues.
 - Reports schema drift: missing fields, undocumented extras, type mismatches, and new enum values.
 - Writes accepted records to SQLite, a JSONL migration file, or both, with `skip` or `replace` conflict handling for SQLite.
@@ -126,6 +127,16 @@ Do not write the first layout from scratch. `infer` reads the source with the no
 python main.py infer --input legacy/tickets.json --output schema_draft.yaml
 python main.py --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
+
+### Verify a handoff
+
+Before a target database leaves the machine, confirm it still matches the files that produced it. `verify` re-reads the sources, rebuilds every stored row with the migration's own rules, and compares per-record digests against the committed database, which it opens read-only.
+
+```powershell
+python main.py verify --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
+```
+
+Exit code `0` means the database matches the sources under the recorded duplicate policy. A changed, missing, or extra row fails the check with the row IDs listed and `airlock_verify.json` written into the output directory. For anonymized runs the anonymized fields stay out of the digests, because their tokens use a run-scoped key that is never stored.
 
 ### Run with pseudonymized fields
 

@@ -81,11 +81,11 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 - Why: writing a client schema by hand is the slowest step for a new legacy layout.
 - Verification: `scripts/verify_schema_infer.py` drafts a layout from the real-data sample and the messy fixture, migrates each source with its own draft, and requires the predicted outcome: zero invalid records for the clean sample, and failures only on the rows the draft flagged. Wired into CI.
 
-### 12. Verification command
+### 12. Verification command (shipped)
 
 - What: `airlock-db verify --input ... --output-dir DIR` reconciles the committed target database against the records the run accepted: counts plus per-record digests.
 - Why: operators need a handoff check that does not depend on the repository scripts.
-- Verification: tampered rows and tampered inputs must each fail with a clear message.
+- Verification: `scripts/verify_handoff.py` runs real migrations and requires an untouched target to verify, then requires changed, deleted, inserted, re-policied, and re-edited-source variants to fail with the matching counts. Wired into CI.
 
 ### 13. Small CLI wins
 

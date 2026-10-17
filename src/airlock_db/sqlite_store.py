@@ -20,6 +20,18 @@ _MAX_BATCH_SIZE = 10_000
 _LOOKUP_CHUNK_SIZE = 500
 _MAX_BATCH_ESTIMATED_BYTES = 4 * 1024 * 1024
 _AMOUNT_QUANTUM = Decimal("0.01")
+TRANSACTION_TABLE = "transactions"
+TRANSACTION_COLUMNS: tuple[str, ...] = (
+    "transaction_id",
+    "account_id",
+    "posted_at",
+    "amount",
+    "currency",
+    "transaction_type",
+    "status",
+    "counterparty",
+    "description",
+)
 _CREATE_TRANSACTIONS_TABLE = """
 CREATE TABLE transactions (
     transaction_id TEXT PRIMARY KEY NOT NULL,
@@ -122,6 +134,26 @@ def _canonical_amount(amount: Decimal) -> str:
     """Render validated currency amounts as fixed-point strings with two places."""
 
     return format(amount.quantize(_AMOUNT_QUANTUM), "f")
+
+
+def transaction_row(transaction: FinancialTransaction) -> tuple[Any, ...]:
+    """Return the SQLite-bound values for one validated transaction.
+
+    The value order matches ``TRANSACTION_COLUMNS``, and the migration write
+    path and the handoff verification both use this function.
+    """
+
+    return (
+        str(transaction.transaction_id),
+        transaction.account_id,
+        transaction.posted_at.isoformat(),
+        _canonical_amount(transaction.amount),
+        transaction.currency,
+        transaction.transaction_type.value,
+        transaction.status.value,
+        transaction.counterparty,
+        transaction.description,
+    )
 
 
 def _estimate_row_size(row: tuple[Any, ...]) -> int:
@@ -467,17 +499,7 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
 
         if self._connection is None or self._committed:
             raise RuntimeError("SQLite target store is not open for writes")
-        row = (
-            str(transaction.transaction_id),
-            transaction.account_id,
-            transaction.posted_at.isoformat(),
-            _canonical_amount(transaction.amount),
-            transaction.currency,
-            transaction.transaction_type.value,
-            transaction.status.value,
-            transaction.counterparty,
-            transaction.description,
-        )
+        row = transaction_row(transaction)
         self._batch.append(row)
         self._batch_estimated_bytes += _estimate_row_size(row)
         if (

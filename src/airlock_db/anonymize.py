@@ -11,6 +11,12 @@ from pydantic import BaseModel
 
 from .schemas import FinancialTransaction
 
+BUILTIN_ANONYMIZED_FIELDS: tuple[str, ...] = (
+    "account_id",
+    "counterparty",
+    "description",
+)
+
 
 class RunAnonymizer:
     """Pseudonymize identifiers with a random key that lives only for this run.

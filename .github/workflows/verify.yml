@@ -83,6 +83,9 @@ jobs:
       - name: Schema inference
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_schema_infer.py ci-infer
+      - name: Target verification
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_handoff.py ci-handoff
       - name: Multi-table source database
         run: |
           python - <<'PY'

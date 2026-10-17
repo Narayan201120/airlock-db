@@ -12,7 +12,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .schema_config import DynamicSchema
+from .schema_config import DynamicField, DynamicSchema
 from .sqlite_store import (
     SQLiteWriteSummary,
     _MAX_BATCH_ESTIMATED_BYTES,
@@ -27,7 +27,7 @@ _LOOKUP_CHUNK_SIZE = 500
 _INTERNAL_COLUMN = "migrated_at"
 
 
-def _quote_identifier(value: str) -> str:
+def quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
@@ -37,6 +37,51 @@ def _normalize_sql(statement: str) -> str:
 
 def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def database_value(field: DynamicField, value: Any) -> Any:
+    """Return the SQLite-bound value for one configured field value."""
+
+    if value is None:
+        return None
+    # Pydantic has already normalized configured primitive fields. Return
+    # them directly and consult field metadata only for boolean coercion.
+    if type(value) is str:
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, bool):
+        return int(value) if field.type_name == "boolean" else value
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        return value
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if field.type_name == "boolean":
+        return int(value)
+    return value
+
+
+def dynamic_row(schema: DynamicSchema, record: BaseModel) -> tuple[Any, ...]:
+    """Return the SQLite-bound values for one validated dynamic record.
+
+    The value order matches ``schema.fields``, and the migration write path
+    and the handoff verification both use this function.
+    """
+
+    # Configured models contain only declared fields; reuse the validated
+    # values instead of allocating a second mapping with model_dump().
+    values = record.__dict__
+    return tuple(
+        database_value(field, values.get(field.name)) for field in schema.fields
+    )
 
 
 class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
@@ -78,24 +123,24 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
         self._select_first = False
         self._field_names = tuple(field.name for field in schema.fields)
         self._id_index = self._field_names.index(schema.id_field)
-        self._quoted_fields = tuple(_quote_identifier(name) for name in self._field_names)
+        self._quoted_fields = tuple(quote_identifier(name) for name in self._field_names)
         self._create_sql = self._build_create_sql()
 
     def _build_create_sql(self) -> str:
         columns: list[str] = []
         for field in self.schema.fields:
-            definition = f"{_quote_identifier(field.name)} {field.sql_type}"
+            definition = f"{quote_identifier(field.name)} {field.sql_type}"
             if field.required:
                 definition += " NOT NULL"
             if field.type_name == "enum":
                 values = ", ".join(_sql_literal(value) for value in field.enum_values)
-                definition += f" CHECK ({_quote_identifier(field.name)} IN ({values}))"
+                definition += f" CHECK ({quote_identifier(field.name)} IN ({values}))"
             elif field.type_name == "boolean":
-                definition += f" CHECK ({_quote_identifier(field.name)} IN (0, 1))"
+                definition += f" CHECK ({quote_identifier(field.name)} IN (0, 1))"
             columns.append(definition)
-        columns.append(f'{_quote_identifier(_INTERNAL_COLUMN)} TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP')
-        columns.append(f"PRIMARY KEY ({_quote_identifier(self.schema.id_field)})")
-        return f"CREATE TABLE {_quote_identifier(self.table_name)} ({', '.join(columns)})"
+        columns.append(f'{quote_identifier(_INTERNAL_COLUMN)} TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP')
+        columns.append(f"PRIMARY KEY ({quote_identifier(self.schema.id_field)})")
+        return f"CREATE TABLE {quote_identifier(self.table_name)} ({', '.join(columns)})"
 
     def __enter__(self) -> DynamicSQLiteTargetStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,45 +170,14 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
         return self
 
     def _database_value(self, field_index: int, value: Any) -> Any:
-        if value is None:
-            return None
-        # Pydantic has already normalized configured primitive fields. Return
-        # them directly and consult field metadata only for boolean coercion.
-        if type(value) is str:
-            return value
-        if isinstance(value, Enum):
-            return value.value
-        if isinstance(value, bool):
-            field = self.schema.fields[field_index]
-            return int(value) if field.type_name == "boolean" else value
-        if type(value) is int:
-            return value
-        if type(value) is float:
-            return value
-        if isinstance(value, UUID):
-            return str(value)
-        if isinstance(value, datetime):
-            return value.isoformat()
-        if isinstance(value, date):
-            return value.isoformat()
-        if isinstance(value, Decimal):
-            return format(value, "f")
-        if field.type_name == "boolean":
-            return int(value)
-        return value
+        return database_value(self.schema.fields[field_index], value)
 
     def add(self, record: BaseModel) -> None:
         """Queue one validated record for a bounded batch write."""
 
         if self._connection is None or self._committed:
             raise RuntimeError("SQLite target store is not open for writes")
-        # Configured models contain only declared fields; reuse the validated
-        # values instead of allocating a second mapping with model_dump().
-        values = record.__dict__
-        row = tuple(
-            self._database_value(index, values.get(name))
-            for index, name in enumerate(self._field_names)
-        )
+        row = dynamic_row(self.schema, record)
         self._batch.append(row)
         self._batch_estimated_bytes += _estimate_row_size(row)
         if (
@@ -201,7 +215,7 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
             chunk = keys[offset : offset + _LOOKUP_CHUNK_SIZE]
             placeholders = ", ".join("?" for _ in chunk)
             rows = self._connection.execute(
-                f"SELECT {select_fields} FROM {_quote_identifier(self.table_name)} "
+                f"SELECT {select_fields} FROM {quote_identifier(self.table_name)} "
                 f"WHERE {quoted_id} IN ({placeholders})",
                 chunk,
             )
@@ -213,7 +227,7 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
     def _insert_sql(self, *, replace: bool) -> str:
         columns = ", ".join(self._quoted_fields)
         placeholders = ", ".join("?" for _ in self._field_names)
-        quoted_table = _quote_identifier(self.table_name)
+        quoted_table = quote_identifier(self.table_name)
         quoted_id = self._quoted_fields[self._id_index]
         statement = (
             f"INSERT INTO {quoted_table} ({columns}) VALUES ({placeholders}) "

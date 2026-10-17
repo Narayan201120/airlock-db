@@ -182,6 +182,20 @@ To use `--anonymize` with a dynamic layout, mark one or more eligible string fie
 
 Include the PyYAML wheel alongside Pydantic in the approved local wheelhouse before installing the project with `--no-index`.
 
+## Verifying a migration handoff
+
+After a run, `verify` reconciles the committed target database with the sources that produced it:
+
+```powershell
+python main.py verify --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
+```
+
+The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--csv-delimiter`, `--csv-encoding`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
+
+Duplicate keys follow the recorded policy: `skip` keeps the first occurrence, `replace` keeps the last. `--conflict-policy` overrides the policy recorded in `airlock_summary.json`, and a disagreement prints a warning. For anonymized runs the anonymized fields are excluded from the digests, because the tokens use a run-scoped key that is never stored; `--anonymized` forces that behavior when the summary is missing.
+
+Exit codes: `0` consistent, `1` mismatch or a missing target database, `2` bad flags or configuration files. JSONL-only runs have no target database and are refused.
+
 ## Validation and report behavior
 
 Invalid records do not enter SQLite. The pipeline keeps processing later records where it can, and the report counts missing fields, extra fields, type mismatches, unsupported enum values, configured constraint failures, malformed input, and incomplete files.

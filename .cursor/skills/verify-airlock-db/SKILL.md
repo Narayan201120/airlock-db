@@ -61,3 +61,5 @@ There is no long-running process to stop. Keep successful output directories as 
 `scripts/verify_archive_input.py [WORKDIR]` builds gzip and zip twins of a JSONL fixture and requires stored rows and counts identical to the plain run. Run it whenever input discovery or a reader changes.
 
 `scripts/verify_schema_infer.py [WORKDIR]` drafts a layout from the example fixtures with `airlock-db infer`, then migrates each source with its own draft. The clean sample must pass with zero invalid records; the messy fixture must fail on exactly the rows its flagged conflicts predict. Run it whenever inference, the readers, or the dynamic schema change.
+
+`scripts/verify_handoff.py [WORKDIR]` runs real migrations and then reconciles each committed target with its sources through `airlock-db verify`. The untouched target must be consistent; changed, deleted, inserted, re-policied, and re-edited-source variants must each fail with the matching counts. Run it whenever `verify`, the row builders, the readers, or the storage layout change.
