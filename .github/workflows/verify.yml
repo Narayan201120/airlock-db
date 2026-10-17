@@ -54,11 +54,66 @@ jobs:
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-jsonl \
             --skip-sqlite --expected-checked 10 --expected-valid 10 --expected-invalid 0 \
             --expected-jsonl-rows 10
+      - name: CSV and TSV ingestion
+        run: |
+          python - <<'PY'
+          import csv
+
+          header = ["transaction_id", "account_id", "posted_at", "amount", "currency",
+                    "transaction_type", "status", "counterparty", "description"]
+          rows = [
+              ["3f8a1c2e-4b6d-4e9a-8f1c-2d5e7a9b0c11", "ACC-1001", "2026-01-15T09:30:00Z",
+               "125.50", "USD", "DEBIT", "POSTED", "Northwind, Ltd", "Monthly supplies"],
+              ["8b2d4f6a-1c3e-4a5b-9d7e-0f1a2b3c4d5e", "ACC_2200", "2026-02-03T16:45:00+02:00",
+               "89.99", "EUR", "CREDIT", "POSTED", "Blue Yonder Airlines", ""],
+              ["not-a-uuid", "ACC-1001", "2026-03-01T10:00:00Z", "10.00", "USD", "DEBIT",
+               "POSTED", "Example Co", ""],
+          ]
+          with open("ci-basic.csv", "w", encoding="utf-8-sig", newline="") as stream:
+              writer = csv.writer(stream)
+              writer.writerow(header)
+              writer.writerows(rows)
+          PY
+          python main.py --input ci-basic.csv --output-dir ci-csv || test $? -eq 1
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-csv \
+            --expected-checked 3 --expected-valid 2 --expected-invalid 1 --expected-rows 2
+      - name: Multi-table source database
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          columns = ("transaction_id TEXT, account_id TEXT, posted_at TEXT, amount TEXT, "
+                     "currency TEXT, transaction_type TEXT, status TEXT, counterparty TEXT, "
+                     "description TEXT")
+          connection = sqlite3.connect("ci-multi.db")
+          connection.execute(f"CREATE TABLE a ({columns})")
+          connection.execute(f"CREATE TABLE b ({columns})")
+          connection.execute(
+              "INSERT INTO a VALUES ('3f8a1c2e-4b6d-4e9a-8f1c-2d5e7a9b0c11', 'ACC-1001', "
+              "'2026-01-15T09:30:00Z', '125.50', 'USD', 'DEBIT', 'POSTED', 'Northwind', NULL)")
+          connection.execute(
+              "INSERT INTO b VALUES ('8b2d4f6a-1c3e-4a5b-9d7e-0f1a2b3c4d5e', 'ACC_2200', "
+              "'2026-02-03T16:45:00+02:00', '89.99', 'EUR', 'CREDIT', 'POSTED', 'Blue Yonder', NULL)")
+          connection.execute(
+              "INSERT INTO b VALUES ('not-a-uuid', 'ACC-1001', '2026-03-01T10:00:00Z', "
+              "'10.00', 'USD', 'DEBIT', 'POSTED', 'Example', NULL)")
+          connection.commit()
+          connection.close()
+          PY
+          python main.py --source-db ci-multi.db --source-table a --source-table b --output-dir ci-multi || test $? -eq 1
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-multi \
+            --expected-checked 3 --expected-valid 2 --expected-invalid 1 --expected-rows 2
       - name: Repair workflow with resume
         run: |
           python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --error-log --output-dir ci-repair || test $? -eq 1
           printf 'd\nd\nq\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q '0 corrected, 2 dropped'
           printf 'q\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q 'Resumed: 2'
+      - name: Scripted repair decisions and report refresh
+        run: |
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --error-log --output-dir ci-decisions || test $? -eq 1
+          printf '{"entry": 1, "action": "drop"}\n{"entry": 2, "action": "set", "field": "amount", "value": "5.00"}\n{"entry": 3, "action": "set", "field": "status", "value": "POSTED"}\n' > ci-decisions.jsonl
+          python main.py repair --error-log ci-decisions/airlock_errors.jsonl --constraints examples/constraints.json --decisions ci-decisions.jsonl
+          python main.py report --output-dir ci-decisions | grep -q 'Repair outcomes: 2 corrected, 1 dropped'
       - name: XML equivalence
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_xml_equivalence.py \
@@ -101,3 +156,9 @@ jobs:
           python main.py --source-db legacy-source.db --output-dir ci-source-db || test $? -eq 1
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-source-db \
             --expected-checked 4 --expected-valid 2 --expected-invalid 2 --expected-rows 2
+      - name: Checkpoint and resume
+        run: |
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --commit-every 4 --output-dir ci-checkpoint || test $? -eq 1
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --commit-every 4 --resume --output-dir ci-checkpoint | grep -q 'Resumed: 32'
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-checkpoint \
+            --expected-checked 32 --expected-valid 8 --expected-invalid 24 --expected-rows 8

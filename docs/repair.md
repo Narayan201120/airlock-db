@@ -37,6 +37,19 @@ Accepted corrections and drop decisions are staged while you review the log. SQL
 - The database defaults to `target_migration.db` beside the error log. Use `--output-db` to change it.
 - The temporary staging file is capped at 256 MiB.
 
+## Non-interactive repair
+
+`--decisions decisions.jsonl` applies scripted decisions through the same validation, staging, and checkpoint pipeline as the interactive session, then commits. One JSON object per line:
+
+```jsonl
+{"entry": 1, "action": "drop"}
+{"entry": 2, "action": "set", "field": "amount", "value": "5.00"}
+{"entry": 3, "action": "remove", "field": "legacy_note"}
+{"entry": 4, "action": "edit", "record": {"transaction_id": "...", "account_id": "...", "posted_at": "...", "amount": "1.00", "currency": "USD", "transaction_type": "DEBIT", "status": "POSTED", "counterparty": "Example"}}
+```
+
+Entries without decisions are left unhandled. Unknown actions, duplicate entries, and corrections that still fail validation exit with status 2 and commit nothing. Rerunning the same file resumes exactly like an interactive session.
+
 ## Resume and checkpoints
 
 If you stop with `q` and rerun the same log against the same database, completed corrections and drops are skipped. The session reports them as resumed.
@@ -57,6 +70,16 @@ python main.py --input examples/messy_transactions.json --constraints examples/c
 Expected: `Repair complete: 0 corrected, 2 dropped, 0 non-repairable entries.` and a SQLite line ending in `2 repair decisions saved`. Rerun the second command with only `q` piped. The session reports `Resumed: 2` and changes nothing.
 
 Where a row needs only one field corrected, use `p` instead of `d`. Quote text values, for example `p`, then `counterparty`, then `"UNKNOWN"`. See [the real-data notes](../examples/real_data/README.md) for a bank ledger whose rejects are all single-field fixes.
+
+## Rebuild the report
+
+Migration writes `airlock_report.html` once, and repair moves the database ahead of it. Rebuild the report at any time:
+
+```powershell
+python main.py report --output-dir output
+```
+
+The refreshed report rebuilds from `airlock_summary.json`, adds the current database row count, and shows a "Repair outcomes" section with log entries, corrected, dropped, and pending counts whenever a repair log exists.
 
 ## Repairing with --anonymize
 

@@ -17,6 +17,7 @@ from .sqlite_store import (
     SQLiteWriteSummary,
     _MAX_BATCH_ESTIMATED_BYTES,
     _MAX_BATCH_SIZE,
+    _MigrationCheckpointMixin,
     _estimate_row_size,
 )
 from .repair_progress import record_repair_progress
@@ -38,12 +39,13 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-class DynamicSQLiteTargetStore:
+class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
     """Store all fields of a configured model in a schema-specific SQLite table.
 
     The table name includes the validated schema fingerprint, so different
     client layouts cannot be mixed accidentally. Configured field names are
     validated before reaching this module and quoted in every SQL statement.
+    checkpoint() is optional: without it the run stays one transaction.
     """
 
     def __init__(
@@ -72,6 +74,7 @@ class DynamicSQLiteTargetStore:
         self._conflicts = 0
         self._committed = False
         self._repair_progress_ready = False
+        self._migration_progress_ready = False
         self._field_names = tuple(field.name for field in schema.fields)
         self._id_index = self._field_names.index(schema.id_field)
         self._quoted_fields = tuple(_quote_identifier(name) for name in self._field_names)

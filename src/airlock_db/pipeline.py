@@ -121,7 +121,7 @@ class ValidationMetrics:
     source-level issue records that did not stop parsing; ``incomplete_files``
     counts sources where parsing stopped before the end. Drift and error counts
     represent issue occurrences, so one invalid row can contribute more than
-    one count.
+    one count. ``source_counts`` breaks row totals down per source label.
     """
 
     records_seen: int = 0
@@ -131,8 +131,18 @@ class ValidationMetrics:
     incomplete_files: int = 0
     drift_counts: Counter[str] = field(default_factory=Counter)
     error_counts: Counter[str] = field(default_factory=Counter)
+    source_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def observe(self, result: MigrationRecordResult) -> None:
+        if result.record_number is not None:
+            counts = self.source_counts.setdefault(
+                result.source, {"records": 0, "valid": 0, "invalid": 0}
+            )
+            counts["records"] += 1
+            if result.is_valid:
+                counts["valid"] += 1
+            else:
+                counts["invalid"] += 1
         is_file_error = (
             result.record_number is None
             and any(issue.category is DriftCategory.SOURCE_ERROR for issue in result.issues)
@@ -161,6 +171,9 @@ class ValidationMetrics:
             "incomplete_files": self.incomplete_files,
             "drift_counts": dict(sorted(self.drift_counts.items())),
             "error_counts": dict(sorted(self.error_counts.items())),
+            "source_counts": {
+                source: dict(counts) for source, counts in sorted(self.source_counts.items())
+            },
         }
 
 
@@ -477,6 +490,8 @@ def iter_validated_records(
     source_labeler: Callable[[str], str] | None = None,
     model: type[BaseModel] = FinancialTransaction,
     excluded_paths: Iterable[str | Path] = (),
+    csv_delimiter: str | None = None,
+    csv_encoding: str | None = None,
 ) -> Generator[MigrationRecordResult, None, None]:
     """Validate records from one or more files/directories without stopping on bad rows.
 
@@ -501,6 +516,8 @@ def iter_validated_records(
                 source,
                 source_labeler=source_labeler,
                 excluded_paths=excluded_path_list,
+                csv_delimiter=csv_delimiter,
+                csv_encoding=csv_encoding,
             )
             try:
                 for item in records:

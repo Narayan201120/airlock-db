@@ -5,6 +5,8 @@
 - Create an opt-in JSONL sidecar of rejected records with `--error-log`.
 - Review and edit rejected records through the `repair` subcommand.
 - Revalidate corrections before committing them to SQLite.
+- Apply scripted decisions non-interactively with `--decisions decisions.jsonl`.
+- Rebuild the report after repair with `python main.py report --output-dir DIR`.
 
 ## How to get to it (user POV)
 

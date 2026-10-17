@@ -1,8 +1,9 @@
-"""Record-at-a-time readers for JSON, JSONL, and XML migration inputs."""
+"""Record-at-a-time readers for JSON, JSONL, XML, and CSV/TSV migration inputs."""
 
 from __future__ import annotations
 
 import codecs
+import csv
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from typing import Any, Callable, Generator, Iterable, TextIO
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_SUFFIXES = {".json", ".jsonl", ".ndjson", ".xml"}
+SUPPORTED_SUFFIXES = {".csv", ".json", ".jsonl", ".ndjson", ".tsv", ".xml"}
 _XML_RECORD_TAGS = {"transaction", "record", "row", "item", "entry", "payment"}
 _JSON_CHUNK_SIZE = 64 * 1024
 _JSONL_LINE_DELIMITER = re.compile(rb"\r\n|\r|\n")
@@ -25,6 +26,11 @@ _JSONL_LINE_DELIMITER = re.compile(rb"\r\n|\r|\n")
 # Keep them low because Python object graphs can be much larger than source text.
 _MAX_JSON_RECORD_CHARS = 512 * 1024
 _MAX_JSONL_RECORD_BYTES = 512 * 1024
+_MAX_CSV_RECORD_CHARS = 512 * 1024
+# csv's C reader must be able to hand over large individual fields so the
+# per-row cap above can flag them; beyond this bound csv.Error is reported
+# for the source instead.
+_CSV_FIELD_SIZE_LIMIT = 4 * 1024 * 1024
 _MAX_XML_RECORD_CHARS = 512 * 1024
 _MAX_XML_RECORD_BYTES = 4 * 1024 * 1024
 _MAX_XML_RECORD_NODES = 10_000
@@ -162,10 +168,10 @@ class InputRecord:
 
 @dataclass(frozen=True, slots=True)
 class DatabaseSource:
-    """One table of a local SQLite database, used as a read-only input source."""
+    """One or more named tables of a local SQLite database, read-only input."""
 
     path: Path
-    table: str | None = None
+    tables: tuple[str, ...] = ()
 
 
 class _JSONStream:
@@ -1239,7 +1245,7 @@ def _iter_source_paths(
     if not found_supported_file:
         yield InputRecord(
             str(path), None,
-            issue=SourceIssue("no_supported_files", "No supported JSON, JSONL, NDJSON, or XML files were found."),
+            issue=SourceIssue("no_supported_files", "No supported JSON, JSONL, NDJSON, XML, CSV, or TSV files were found."),
         )
 
 
@@ -1252,11 +1258,17 @@ def _iter_database_records(
     *,
     source_labeler: Callable[[str], str] | None = None,
 ) -> Generator[InputRecord, None, None]:
-    """Yield rows from one table of a local SQLite database, one at a time.
+    """Yield rows from requested SQLite tables, one record at a time.
 
     The database is opened read-only. Column names act exactly like JSON
     object keys: missing columns are missing-field errors, extra columns are
     extra-field errors, and values pass through the same strict validation.
+
+    With ``tables`` non-empty, requested tables stream in order and each
+    table restarts record numbering at 1 under a ``(table)`` label. A table
+    missing from the database is reported and skipped. With ``tables``
+    empty, the single table found is chosen; zero tables or several tables
+    are reported as source-level issues.
     """
 
     path = Path(source.path)
@@ -1282,20 +1294,10 @@ def _iter_database_records(
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
         ]
-        if source.table is not None:
-            if source.table not in tables:
-                yield InputRecord(
-                    base_label,
-                    None,
-                    issue=SourceIssue(
-                        "source_db_table_missing",
-                        f"table {source.table!r} was not found in {base_label}",
-                    ),
-                )
-                return
-            chosen = source.table
+        if source.tables:
+            chosen_tables: list[str | None] = list(source.tables)
         elif len(tables) == 1:
-            chosen = tables[0]
+            chosen_tables = [tables[0]]
         elif not tables:
             yield InputRecord(
                 base_label,
@@ -1304,7 +1306,7 @@ def _iter_database_records(
                     "source_db_empty", f"no tables were found in {base_label}"
                 ),
             )
-            return
+            chosen_tables = []
         else:
             preview = ", ".join(tables[:20])
             yield InputRecord(
@@ -1313,19 +1315,37 @@ def _iter_database_records(
                 issue=SourceIssue(
                     "source_db_table_required",
                     f"multiple tables found in {base_label}; "
-                    f"pass --source-table to choose one: {preview}",
+                    "pass the table name explicitly "
+                    f"(the CLI option may be repeated): {preview}",
                 ),
             )
-            return
+            chosen_tables = []
 
-        label = f"{base_label} ({chosen})"
-        if source_labeler is not None:
-            label = source_labeler(label)
-        cursor = connection.execute(f"SELECT * FROM {_quote_sql_identifier(chosen)}")
-        columns = [item[0] for item in cursor.description or ()]
-        for row in cursor:
-            record_number += 1
-            yield InputRecord(label, record_number, value=dict(zip(columns, row)))
+        for chosen in chosen_tables:
+            if chosen is None or chosen not in tables:
+                yield InputRecord(
+                    base_label,
+                    None,
+                    issue=SourceIssue(
+                        "source_db_table_missing",
+                        f"table {chosen!r} was not found in {base_label}",
+                    ),
+                )
+                continue
+            label = f"{base_label} ({chosen})"
+            if source_labeler is not None:
+                label = source_labeler(label)
+            cursor = connection.execute(
+                f"SELECT * FROM {_quote_sql_identifier(chosen)}"
+            )
+            columns = [item[0] for item in cursor.description or ()]
+            table_record_number = 0
+            for row in cursor:
+                table_record_number += 1
+                record_number = table_record_number
+                yield InputRecord(
+                    label, table_record_number, value=dict(zip(columns, row))
+                )
     except (sqlite3.Error, OSError) as exc:
         yield InputRecord(
             base_label,
@@ -1344,18 +1364,143 @@ def _iter_database_records(
                 pass
 
 
+def _iter_csv_file(
+    path: Path,
+    *,
+    source_labeler: Callable[[str], str] | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> Generator[InputRecord, None, None]:
+    """Yield CSV/TSV data rows one row at a time.
+
+    File conventions mirror the JSONL reader: blank physical lines are
+    skipped, malformed rows do not abort the source, and file-level failures
+    are yielded as records with an attached ``issue``. The first non-blank
+    line is the header. Encoding defaults to ``utf-8-sig`` to tolerate a
+    BOM, and the delimiter defaults to tab for ``.tsv`` files and comma
+    otherwise.
+    """
+
+    record_number = 0
+    try:
+        # Keep the csv module's field cap above the per-row cap so oversized
+        # rows are reported row by row; beyond this bound csv.Error is
+        # reported for the source instead.
+        csv.field_size_limit(_CSV_FIELD_SIZE_LIMIT)
+        chosen_delimiter = delimiter
+        if chosen_delimiter is None:
+            chosen_delimiter = "\t" if path.suffix.casefold() == ".tsv" else ","
+        header: list[str] | None = None
+        with path.open(
+            "r", encoding=encoding or "utf-8-sig", errors="strict", newline=""
+        ) as stream:
+            for values in csv.reader(stream, delimiter=chosen_delimiter):
+                if not values:
+                    # csv.reader yields an empty field list per blank line.
+                    continue
+                if header is None:
+                    header = [name.strip() for name in values]
+                    if not any(header):
+                        yield InputRecord(
+                            str(path),
+                            None,
+                            issue=SourceIssue(
+                                "csv_header_missing",
+                                "CSV input contains no usable header row.",
+                            ),
+                        )
+                        return
+                    seen: set[str] = set()
+                    duplicate: str | None = None
+                    for name in header:
+                        if name in seen:
+                            duplicate = name
+                            break
+                        seen.add(name)
+                    if duplicate is not None:
+                        yield InputRecord(
+                            str(path),
+                            None,
+                            issue=SourceIssue(
+                                "csv_duplicate_header",
+                                f"CSV header repeats the column name {duplicate!r}",
+                            ),
+                        )
+                        return
+                    continue
+                record_number += 1
+                if sum(len(value) for value in values) > _MAX_CSV_RECORD_CHARS:
+                    yield InputRecord(
+                        str(path),
+                        record_number,
+                        issue=SourceIssue(
+                            "record_too_large",
+                            f"CSV row exceeds {_MAX_CSV_RECORD_CHARS} characters",
+                        ),
+                    )
+                    continue
+                extra = len(values) - len(header)
+                if extra > 0:
+                    yield InputRecord(
+                        str(path),
+                        record_number,
+                        issue=SourceIssue(
+                            "csv_extra_values",
+                            f"row has {extra} more value(s) than the header defines",
+                        ),
+                    )
+                    continue
+                yield InputRecord(
+                    str(path),
+                    record_number,
+                    value={
+                        name: (None if value == "" else value)
+                        for name, value in zip(header, values)
+                    },
+                )
+        if header is None:
+            yield InputRecord(
+                str(path),
+                None,
+                issue=SourceIssue(
+                    "csv_header_missing", "CSV input contains no usable header row."
+                ),
+            )
+    except UnicodeError as exc:
+        yield _source_issue(path, None, "encoding_error", exc, incomplete=record_number > 0)
+    except OSError as exc:
+        yield _source_issue(path, None, "io_error", exc, incomplete=record_number > 0)
+    except csv.Error as exc:
+        yield _source_issue(path, None, "csv_error", exc, incomplete=record_number > 0)
+    except Exception as exc:
+        if source_labeler is None:
+            logger.exception("Unexpected CSV reader failure for %s", path)
+        else:
+            logger.error(
+                "Unexpected CSV reader failure for %s (%s)",
+                source_labeler(str(path)),
+                type(exc).__name__,
+            )
+        yield _source_issue(
+            path, None, "csv_reader_error", exc, incomplete=record_number > 0
+        )
+
+
 def iter_source_records(
     source: str | Path | DatabaseSource,
     *,
     source_labeler: Callable[[str], str] | None = None,
     excluded_paths: Iterable[str | Path] = (),
+    csv_delimiter: str | None = None,
+    csv_encoding: str | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Yield decoded records from one file, directory, or database table.
 
-    JSON arrays are decoded incrementally. JSONL/NDJSON syntax errors are
-    isolated to their physical line so subsequent lines can still be read.
-    File-level and database-level failures are yielded as records with an
-    attached ``issue``.
+    JSON arrays are decoded incrementally. JSONL/NDJSON and CSV/TSV syntax
+    errors are isolated to their physical row so subsequent rows can still
+    be read. ``csv_delimiter`` and ``csv_encoding`` override the defaults
+    for CSV/TSV sources. File-level and database-level failures are yielded
+    as records with an attached ``issue``.
     """
 
     if isinstance(source, DatabaseSource):
@@ -1375,6 +1520,13 @@ def iter_source_records(
             records = _iter_json_lines(entry, source_labeler=source_labeler)
         elif suffix == ".xml":
             records = _iter_xml_file(entry, source_labeler=source_labeler)
+        elif suffix in {".csv", ".tsv"}:
+            records = _iter_csv_file(
+                entry,
+                source_labeler=source_labeler,
+                delimiter=csv_delimiter,
+                encoding=csv_encoding,
+            )
         else:
             continue
         try:

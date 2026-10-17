@@ -39,6 +39,8 @@ def build_run_summary(
     conflict_policy: str,
     anonymized: bool,
     exit_code: int,
+    issue_rows: Sequence[Mapping[str, Any]] | None = None,
+    resumed_records: int = 0,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the JSON-safe run summary for one migration."""
@@ -70,13 +72,16 @@ def build_run_summary(
             "invalid": data["invalid_records"],
             "file_errors": data["file_errors"],
             "incomplete_files": data["incomplete_files"],
+            "resumed_records": resumed_records,
         },
         "issues": {
             "total": sum(data["error_counts"].values()),
             "by_code": data["error_counts"],
         },
         "drift": {category: count for category, count in data["drift_counts"].items()},
+        "source_counts": data.get("source_counts", {}),
         "sources": list(sources),
+        "issue_rows": [dict(row) for row in (issue_rows or ())],
         "storage": storage_snapshot,
         "exit_code": exit_code,
     }

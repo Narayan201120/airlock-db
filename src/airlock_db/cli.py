@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -25,11 +26,12 @@ from .pipeline import (
     iter_validated_records,
 )
 from .report import write_html_report
+from .report_refresh import refresh_main
 from .repair import repair_main
 from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
 from .schema_config import DynamicSchema, SchemaConfigError
 from .schemas import FinancialTransaction
-from .sqlite_store import SQLiteTargetStore
+from .sqlite_store import SQLiteTargetStore, read_migration_progress
 from .summary import build_run_summary, write_run_summary
 
 
@@ -59,11 +61,21 @@ def _integer_in_range(minimum: int, maximum: int):
     return parse
 
 
+def _single_character(value: str) -> str:
+    if len(value) != 1:
+        raise argparse.ArgumentTypeError("must be a single character")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="airlock-db",
-        description="Validate local JSON, JSONL, NDJSON, or XML records and migrate valid records to SQLite.",
-        epilog="Use `airlock-db repair --error-log PATH` to review rejected records interactively.",
+        description="Validate local JSON, JSONL, NDJSON, XML, CSV, or TSV records and migrate valid records to SQLite.",
+        epilog=(
+            "Use `airlock-db repair --error-log PATH` to review rejected records "
+            "interactively, and `airlock-db report --output-dir DIR` to rebuild a "
+            "report after repair."
+        ),
     )
     parser.add_argument(
         "-i",
@@ -71,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="PATH",
-        help="input file or directory; repeat the option to scan multiple paths",
+        help="input file or directory (JSON, JSONL, NDJSON, XML, CSV, TSV); repeat the option to scan multiple paths",
     )
     parser.add_argument(
         "--source-db",
@@ -82,8 +94,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-table",
+        action="append",
+        default=None,
         metavar="NAME",
-        help="table to read from each --source-db; defaults to the only table found",
+        help="table to read from each --source-db; repeat for several tables; defaults to the only table found",
+    )
+    parser.add_argument(
+        "--csv-delimiter",
+        type=_single_character,
+        metavar="CHAR",
+        help="delimiter for CSV input; defaults to a comma, or a tab for .tsv files",
+    )
+    parser.add_argument(
+        "--csv-encoding",
+        metavar="NAME",
+        help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
     )
     parser.add_argument(
         "-c",
@@ -108,6 +133,17 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("sqlite", "jsonl", "both"),
         default="sqlite",
         help="target output: SQLite database (default), JSONL migration file, or both",
+    )
+    parser.add_argument(
+        "--commit-every",
+        type=_integer_in_range(1, 100_000_000),
+        metavar="N",
+        help="commit accepted records and save progress every N records (enables resumable runs)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip writing records already committed by an earlier --commit-every run",
     )
     parser.add_argument(
         "--error-log",
@@ -382,14 +418,17 @@ def _is_repair_log_file(path: Path) -> bool:
 
 def _source_display_label(source: Path | DatabaseSource) -> str:
     if isinstance(source, DatabaseSource):
-        return f"{source.path} ({source.table})" if source.table else str(source.path)
+        if source.tables:
+            return f"{source.path} ({', '.join(source.tables)})"
+        return str(source.path)
     return str(source)
 
 
 def run_migration(args: argparse.Namespace) -> int:
     inputs = [Path(value) for value in (args.input or [])]
+    source_tables = tuple(getattr(args, "source_table", None) or ())
     database_sources = [
-        DatabaseSource(Path(value), args.source_table)
+        DatabaseSource(Path(value), source_tables)
         for value in (args.source_db or [])
     ]
     sources: list[Path | DatabaseSource] = [*inputs, *database_sources]
@@ -409,6 +448,28 @@ def run_migration(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    commit_every = getattr(args, "commit_every", None)
+    resume = getattr(args, "resume", False)
+    if (commit_every is not None or resume) and not use_sqlite:
+        print(
+            "airlock-db: --commit-every and --resume require the SQLite target; "
+            "use --output-format sqlite or both",
+            file=sys.stderr,
+        )
+        return 2
+    if resume and anonymizer is not None:
+        print(
+            "airlock-db: --resume is not supported with --anonymize; "
+            "pseudonyms are run-scoped",
+            file=sys.stderr,
+        )
+        return 2
+    if resume and getattr(args, "error_log", None) is not None:
+        print(
+            "airlock-db: warning: --resume with --error-log writes a repair log "
+            "for this run's records only",
+            file=sys.stderr,
+        )
     dynamic_schema: DynamicSchema | None = None
     if getattr(args, "config", None):
         try:
@@ -432,6 +493,20 @@ def run_migration(args: argparse.Namespace) -> int:
             return 2
     schema_fields = dynamic_schema.field_names if dynamic_schema else _REPORT_SCHEMA_FIELDS
     record_model = dynamic_schema.model if dynamic_schema else FinancialTransaction
+    progress_scope: str | None = None
+    if commit_every is not None or resume:
+        progress_scope = hashlib.sha256(
+            "|".join(
+                (
+                    "airlock-progress-v1",
+                    dynamic_schema.fingerprint
+                    if dynamic_schema
+                    else _BUILTIN_SCHEMA_FINGERPRINT,
+                    args.conflict_policy,
+                    *sorted(str(source) for source in sources),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
     logger.info("Starting migration with %d source(s)", len(sources))
     if use_sqlite:
         logger.info(
@@ -556,6 +631,32 @@ def run_migration(args: argparse.Namespace) -> int:
             )
             return 2
 
+    resumed_records = 0
+    stored_since_checkpoint = 0
+    last_processed: dict[str, tuple[int, int, float]] = {}
+    stat_cache: dict[str, tuple[int, float] | None] = {}
+    resume_progress: dict[str, tuple[int, int, float]] = {}
+
+    def _source_identity(source_text: str) -> tuple[int, float] | None:
+        if source_text not in stat_cache:
+            try:
+                info = os.stat(source_text)
+                stat_cache[source_text] = (info.st_size, info.st_mtime)
+            except OSError:
+                stat_cache[source_text] = None
+        return stat_cache[source_text]
+
+    def _resume_covers(source_text: str, record_number: int) -> bool:
+        entry = resume_progress.get(source_text)
+        if entry is None or record_number > entry[0]:
+            return False
+        identity = _source_identity(source_text)
+        return bool(
+            identity is not None
+            and identity[0] == entry[1]
+            and abs(identity[1] - entry[2]) < 1e-6
+        )
+
     pipeline_failed = False
     interrupted = False
     try:
@@ -596,6 +697,15 @@ def run_migration(args: argparse.Namespace) -> int:
         )
 
     if not interrupted:
+        if resume and store is not None and progress_scope is not None:
+            try:
+                resume_progress = read_migration_progress(database_path, progress_scope)
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("Could not read saved migration progress: %s", exc)
+            if not resume_progress:
+                logger.warning(
+                    "No saved progress was found for this run; processing all records"
+                )
         try:
             for result in iter_validated_records(
                 sources,
@@ -604,7 +714,29 @@ def run_migration(args: argparse.Namespace) -> int:
                 source_labeler=(anonymizer.source_label if anonymizer else None),
                 model=record_model,
                 excluded_paths=(repair_log_path,) if repair_log_path is not None else (),
+                csv_delimiter=getattr(args, "csv_delimiter", None),
+                csv_encoding=getattr(args, "csv_encoding", None),
             ):
+                resumed_here = (
+                    resume
+                    and result.record_number is not None
+                    and _resume_covers(result.source, result.record_number)
+                )
+                if resumed_here:
+                    resumed_records += 1
+                if (
+                    result.record_number is not None
+                    and progress_scope is not None
+                    and not resumed_here
+                ):
+                    previous = last_processed.get(result.source)
+                    if previous is None or result.record_number > previous[0]:
+                        identity = _source_identity(result.source) or (0, 0.0)
+                        last_processed[result.source] = (
+                            result.record_number,
+                            identity[0],
+                            identity[1],
+                        )
                 if not result.is_valid:
                     _add_bounded_issues(
                         report_issues,
@@ -613,7 +745,11 @@ def run_migration(args: argparse.Namespace) -> int:
                         anonymizer,
                         schema_fields,
                     )
-                    if repair_log is not None and repair_log_error is None:
+                    if (
+                        repair_log is not None
+                        and repair_log_error is None
+                        and not resumed_here
+                    ):
                         try:
                             repair_log.write_result(result)
                         except (OSError, RepairLogError, TypeError, ValueError, RecursionError) as exc:
@@ -627,7 +763,11 @@ def run_migration(args: argparse.Namespace) -> int:
                             else:
                                 logger.error("Could not write repair log (%s)", type(exc).__name__)
                             repair_log.abort()
-                if result.transaction is not None and (store is not None or jsonl_writer is not None):
+                if (
+                    result.transaction is not None
+                    and not resumed_here
+                    and (store is not None or jsonl_writer is not None)
+                ):
                     try:
                         if anonymizer is not None and dynamic_schema is not None:
                             record = anonymizer.configured_record(
@@ -639,8 +779,28 @@ def run_migration(args: argparse.Namespace) -> int:
                             record = result.transaction
                         if store is not None:
                             store.add(record)
+                            stored_since_checkpoint += 1
                         if jsonl_writer is not None:
                             jsonl_writer.add(record)
+                        if (
+                            store is not None
+                            and commit_every is not None
+                            and progress_scope is not None
+                            and stored_since_checkpoint >= commit_every
+                        ):
+                            for progress_source, (
+                                record_no,
+                                source_size,
+                                source_mtime,
+                            ) in last_processed.items():
+                                store.checkpoint(
+                                    progress_scope,
+                                    progress_source,
+                                    record_no,
+                                    int(source_size),
+                                    float(source_mtime),
+                                )
+                            stored_since_checkpoint = 0
                     except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
                         storage_error = _storage_error_message(exc, anonymizer)
                         _log_storage_error(
@@ -734,6 +894,19 @@ def run_migration(args: argparse.Namespace) -> int:
 
     if store is not None:
         try:
+            if progress_scope is not None and last_processed:
+                for progress_source, (
+                    record_no,
+                    source_size,
+                    source_mtime,
+                ) in last_processed.items():
+                    store.checkpoint(
+                        progress_scope,
+                        progress_source,
+                        record_no,
+                        int(source_size),
+                        float(source_mtime),
+                    )
             summary = store.commit()
             storage_summary.update(summary.to_dict())
             storage_summary["status"] = "committed"
@@ -868,6 +1041,8 @@ def run_migration(args: argparse.Namespace) -> int:
                 conflict_policy=args.conflict_policy,
                 anonymized=anonymizer is not None,
                 exit_code=exit_code,
+                issue_rows=report_issues,
+                resumed_records=resumed_records,
             ),
         )
     except (OSError, TypeError, ValueError) as exc:
@@ -893,6 +1068,8 @@ def run_migration(args: argparse.Namespace) -> int:
             print(f"JSONL: {jsonl_display} ({storage_summary['jsonl_rows']} records)")
         else:
             print(f"JSONL: {jsonl_display} (not written)")
+    if resumed_records:
+        print(f"Resumed: {resumed_records} records at or below the saved checkpoint were skipped")
     if repair_log is not None and repair_log_error is None:
         suffix = " (redacted; rows cannot be repaired from this log)" if anonymizer else ""
         log_display = repair_log_path.name if anonymizer else repair_log_path
@@ -934,6 +1111,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             format="%(levelname)s: %(message)s",
         )
         return repair_main(arguments[1:])
+    if arguments and arguments[0] == "report":
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(levelname)s: %(message)s",
+        )
+        return refresh_main(arguments[1:])
     parser = _build_parser()
     args = parser.parse_args(arguments)
     if not args.input and not args.source_db:

@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.1.1 released. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, repair resume, XML equivalence, source-database ingestion) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
+Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, and richer reports. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV, multi-table source database, repair resume, scripted decisions with report refresh, XML equivalence, source-database ingestion, checkpoint/resume) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
 
 ## Ground rules
 
@@ -30,7 +30,7 @@ Current state: v0.1.1 released. The GitHub Actions workflow runs the full end-to
 - Why: CI and dashboards can consume it without scraping HTML. It also becomes the input for item 4.
 - Verification: the output verifier checks that summary counts match the report and database.
 
-## Tier 2: core features
+## Tier 2: shipped in v0.2.0
 
 ### 4. Report regeneration
 
@@ -52,7 +52,7 @@ Current state: v0.1.1 released. The GitHub Actions workflow runs the full end-to
 - Why: legacy databases hold related tables; the one-table limit forces exports.
 - Verification: CI builds a two-table database, migrates both, and checks per-table counts in the report.
 
-## Tier 3: bigger bets, decide per use case
+## Tier 3: shipped in v0.2.0
 
 ### 7. CSV and TSV ingestion
 

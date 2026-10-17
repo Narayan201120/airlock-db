@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -88,6 +89,29 @@ SELECT transaction_id, account_id, posted_at, amount, currency,
 FROM transactions
 WHERE transaction_id IN ({placeholders})
 """
+_MIGRATION_PROGRESS_TABLE = "migration_progress"
+_CREATE_MIGRATION_PROGRESS = """
+CREATE TABLE IF NOT EXISTS migration_progress (
+    scope TEXT NOT NULL,
+    source TEXT NOT NULL,
+    last_record INTEGER NOT NULL,
+    source_size INTEGER NOT NULL,
+    source_mtime REAL NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope, source)
+)
+"""
+_INSERT_MIGRATION_PROGRESS = """
+INSERT OR REPLACE INTO migration_progress (
+    scope, source, last_record, source_size, source_mtime, updated_at
+) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+"""
+_SELECT_MIGRATION_PROGRESS = """
+SELECT source, last_record, source_size, source_mtime
+FROM migration_progress
+WHERE scope = ?
+ORDER BY source
+"""
 
 
 def _normalized_sql(statement: str) -> str:
@@ -123,6 +147,171 @@ def _rows_to_insert_skip_policy(
     )
 
 
+def _progress_label(value: str, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"migration progress {name} must be a non-empty string")
+    return value
+
+
+def _progress_count(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"migration progress {name} must be a non-negative integer")
+    return value
+
+
+def _progress_mtime(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"migration progress {name} must be a number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"migration progress {name} must be finite")
+    return parsed
+
+
+def _ensure_migration_progress_table(
+    connection: sqlite3.Connection,
+    *,
+    verify: bool = True,
+) -> None:
+    """Create the auxiliary progress table in the caller's transaction.
+
+    The table is not a managed record table, so schema version checks never
+    look at it. Its shape is still verified once per store to keep an
+    unrelated object from silently absorbing checkpoints.
+    """
+
+    if not verify:
+        return
+    existing = connection.execute(
+        "SELECT type, sql FROM sqlite_master WHERE name = ?",
+        (_MIGRATION_PROGRESS_TABLE,),
+    ).fetchone()
+    if existing is None:
+        connection.execute(_CREATE_MIGRATION_PROGRESS)
+        return
+    object_type, table_sql = existing
+    if (
+        object_type != "table"
+        or not table_sql
+        or _normalized_sql(table_sql) != _normalized_sql(_CREATE_MIGRATION_PROGRESS)
+    ):
+        raise sqlite3.DatabaseError(
+            "migration progress table does not match the managed format"
+        )
+
+
+def record_migration_progress(
+    connection: sqlite3.Connection,
+    scope: str,
+    source: str,
+    last_record: int,
+    source_size: int,
+    source_mtime: float,
+) -> None:
+    """Store one resumable checkpoint row in the caller's open transaction."""
+
+    connection.execute(
+        _INSERT_MIGRATION_PROGRESS,
+        (
+            _progress_label(scope, "scope"),
+            _progress_label(source, "source"),
+            _progress_count(last_record, "last record"),
+            _progress_count(source_size, "source size"),
+            _progress_mtime(source_mtime, "source mtime"),
+        ),
+    )
+
+
+def read_migration_progress(
+    database_path: str | Path,
+    scope: str,
+) -> dict[str, tuple[int, int, float]]:
+    """Read stored checkpoints for one scope from an existing target database.
+
+    Returns a mapping of source to (last_record, source_size, source_mtime).
+    A missing database or a database without checkpoint rows yields an empty
+    mapping.
+    """
+
+    scope_value = _progress_label(scope, "scope")
+    path = Path(database_path)
+    if not path.is_file():
+        return {}
+    uri = path.resolve().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+    try:
+        existing = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name = ?",
+            (_MIGRATION_PROGRESS_TABLE,),
+        ).fetchone()
+        if existing is None:
+            return {}
+        if existing[0] != "table":
+            raise sqlite3.DatabaseError(
+                "migration progress object is not a table"
+            )
+        progress: dict[str, tuple[int, int, float]] = {}
+        rows = connection.execute(_SELECT_MIGRATION_PROGRESS, (scope_value,))
+        for source, last_record, source_size, source_mtime in rows:
+            key = str(source)
+            if (
+                isinstance(last_record, bool)
+                or not isinstance(last_record, int)
+                or last_record < 0
+                or isinstance(source_size, bool)
+                or not isinstance(source_size, int)
+                or source_size < 0
+                or isinstance(source_mtime, bool)
+                or not isinstance(source_mtime, float)
+                or not math.isfinite(source_mtime)
+            ):
+                raise sqlite3.DatabaseError(
+                    "migration progress contains an invalid checkpoint"
+                )
+            progress[key] = (last_record, source_size, source_mtime)
+        return progress
+    finally:
+        connection.close()
+
+
+class _MigrationCheckpointMixin:
+    """Opt-in resumable checkpoints shared by the SQLite target stores.
+
+    A checkpoint writes the pending batch and the caller's progress row in one
+    transaction, then commits it. Row counts keep accumulating, so a later
+    commit() still summarizes the whole run.
+    """
+
+    def _flush(self) -> None:
+        """Write the pending batch; the concrete store provides this."""
+
+        raise NotImplementedError
+
+    def checkpoint(
+        self,
+        scope: str,
+        source: str,
+        last_record: int,
+        source_size: int,
+        source_mtime: float,
+    ) -> None:
+        """Commit accepted rows and migration progress as one durable step."""
+
+        connection = self._connection
+        if connection is None or self._committed:
+            raise RuntimeError("SQLite target store is not open for writes")
+        _ensure_migration_progress_table(
+            connection, verify=not self._migration_progress_ready
+        )
+        self._migration_progress_ready = True
+        self._flush()
+        record_migration_progress(
+            connection, scope, source, last_record, source_size, source_mtime
+        )
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+
+
 @dataclass(frozen=True, slots=True)
 class SQLiteWriteSummary:
     """Committed row counts for one migration run."""
@@ -141,12 +330,13 @@ class SQLiteWriteSummary:
         }
 
 
-class SQLiteTargetStore:
+class SQLiteTargetStore(_MigrationCheckpointMixin):
     """Initialize the target schema and insert rows in one transaction.
 
     Duplicate transaction IDs can be skipped or replaced according to the
     caller's explicit conflict policy. Amounts are stored as decimal strings
     so SQLite's floating-point numeric affinity cannot change their value.
+    checkpoint() is optional: without it the run stays one transaction.
     """
 
     def __init__(
@@ -172,6 +362,7 @@ class SQLiteTargetStore:
         self._conflicts = 0
         self._committed = False
         self._repair_progress_ready = False
+        self._migration_progress_ready = False
 
     def __enter__(self) -> SQLiteTargetStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)

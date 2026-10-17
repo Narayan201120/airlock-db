@@ -6,13 +6,17 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 
 | Option | Purpose |
 | --- | --- |
-| `--input PATH` | A JSON, JSONL, NDJSON, or XML file, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
+| `--input PATH` | A JSON, JSONL, NDJSON, XML, CSV, or TSV file, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
 | `--source-db PATH` | A local SQLite database read as an input source. Repeat for more databases. |
-| `--source-table NAME` | Table to read from each `--source-db`. Defaults to the only table found; required when the database holds several. |
+| `--source-table NAME` | Table to read from each `--source-db`. Repeat to read several tables in one run. Defaults to the only table found; required when the database holds several. |
+| `--csv-delimiter CHAR` | Delimiter for CSV input. Defaults to a comma, or a tab for `.tsv` files. |
+| `--csv-encoding NAME` | Text encoding for CSV input. Defaults to `utf-8-sig` (tolerates a BOM). |
 | `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
 | `--config PATH` | Optional JSON or YAML file defining a dynamic record schema. |
 | `--output-dir DIR` | Output directory. Defaults to `output`. |
 | `--output-format FORMAT` | `sqlite` (default), `jsonl`, or `both`. Chooses the migration target format. |
+| `--commit-every N` | Commit accepted records and save resumable progress every N records. Requires the SQLite target. |
+| `--resume` | Skip writing records at or below a saved checkpoint from an earlier `--commit-every` run. |
 | `--error-log [PATH]` | Opt in to a bounded rejected-row JSONL log for repair. Relative paths land under the output directory. With no path, uses `airlock_errors.jsonl`. |
 | `--batch-size N` | SQLite write batch size, from 1 to 10,000. Defaults to 500. |
 | `--max-report-issues N` | Issue entries embedded in the report, from 0 to 10,000. Defaults to 1000. |
@@ -38,9 +42,23 @@ The command writes `airlock_report.html` and `airlock_summary.json` into the out
 
 ### Source database input
 
-`--source-db` opens a local SQLite file read-only. Rows stream one at a time, and the file is never modified. The table is chosen by `--source-table`, or automatically when the database contains exactly one table; several tables without `--source-table` fail with a clear source error.
+`--source-db` opens a local SQLite file read-only. Rows stream one at a time, and the file is never modified. Tables are chosen by `--source-table` (repeat it to read several tables in one run), or selected automatically when the database contains exactly one table; never selected silently when several exist. Each table gets its own source label and row numbering.
 
 Column names behave exactly like JSON keys. A missing column is a missing-field error, an unknown column is an extra-field error, and every value passes through the same strict validation. A `--source-db` path cannot serve as the migration target database or the repair log.
+
+### Resumable migrations
+
+For very large sources, `--commit-every N` commits accepted records and saves per-source progress every N records, so an interrupted run continues instead of starting over. Progress lives in a `migration_progress` table inside the target database.
+
+`--resume` skips writing records at or below the saved checkpoint when the source file is unchanged (same size and modification time). Records are still validated for the report and exit code; only storage writes and repair-log entries are skipped, and the run prints how many records it skipped. Resume matches the saved progress by schema, conflict policy, and source list.
+
+Resume requires the SQLite target, cannot be combined with `--anonymize` (pseudonyms are run-scoped), and with `--error-log` the written log covers only the records processed by that run. Without `--commit-every`, behavior is unchanged: accepted rows commit together in one transaction at the end.
+
+### CSV and TSV input
+
+`.csv` and `.tsv` files are read with the standard library `csv` module. The first non-blank line is the header; header names map to schema fields exactly like JSON keys, so missing and unknown columns produce the usual drift errors. Empty cells become `null`. A row with more values than the header defines is rejected as `csv_extra_values`.
+
+Encoding defaults to `utf-8-sig`, which tolerates a byte-order mark, and the delimiter defaults to a comma or, for `.tsv`, a tab. Override either with `--csv-delimiter` and `--csv-encoding`. A missing or duplicate header stops the file with a clear `csv_header_missing` or `csv_duplicate_header` source error.
 
 ## Repair log privacy and caps
 
@@ -57,6 +75,7 @@ Per-record ceilings (file size and total row count remain unbounded):
 - One JSON value: 512 KiB of characters.
 - One JSONL line: 512 KiB of source bytes.
 - One XML record: 512 KiB of text, 4 MiB of source markup, and 10,000 elements.
+- One CSV/TSV row: 512 KiB of joined field text.
 
 Oversized records are reported as `record_too_large`. JSON or XML parsing may stop for that source when it cannot safely resume at the next record.
 

@@ -134,6 +134,35 @@ def _success_failure_svg(valid: int, invalid: int) -> str:
     )
 
 
+def _render_error_row(row: Mapping[str, Any]) -> str:
+    record_number = row.get("record_number")
+    record_text = "Source" if record_number is None else str(record_number)
+    location = row.get("location") or ()
+    field_text = ".".join(str(part) for part in location) if location else "—"
+    input_value = row.get("input")
+    input_text = (
+        str(input_value)
+        if row.get("input_is_serialized")
+        else _format_input(input_value)
+    )
+    input_details = (
+        '<details><summary>View input</summary><pre>'
+        f"{_escape(input_text)}</pre></details>"
+        if input_value is not None
+        else ""
+    )
+    return (
+        '<tr class="problem">'
+        f'<td class="mono">{_escape(row.get("source", ""))}<br>'
+        f'<span class="quiet">{_escape(record_text)}</span></td>'
+        f'<td><code>{_escape(row.get("code", "error"))}</code><br>'
+        f'<span class="quiet">{_escape(row.get("category", ""))}</span></td>'
+        f'<td class="mono">{_escape(field_text)}</td>'
+        f'<td class="issue-message">{_escape(row.get("message", ""))}{input_details}</td>'
+        '</tr>'
+    )
+
+
 def render_html_report(
     metrics: ValidationMetrics,
     *,
@@ -141,6 +170,7 @@ def render_html_report(
     storage: Mapping[str, Any],
     sources: Sequence[str] = (),
     generated_at: datetime | None = None,
+    repair_outcomes: Mapping[str, int] | None = None,
 ) -> str:
     """Return a single-file report with inline styling, SVG, and error details."""
 
@@ -184,45 +214,83 @@ def render_html_report(
     else:
         drift_rows = '<tr><td colspan="2" class="empty-row">No schema drift detected.</td></tr>'
 
+    source_counts = data["source_counts"]
+    if source_counts:
+        source_rows = "".join(
+            f"<tr><td>{_escape(source)}</td><td>{int(counts.get('records', 0))}</td>"
+            f"<td>{int(counts.get('valid', 0))}</td>"
+            f"<td>{int(counts.get('invalid', 0))}</td></tr>"
+            for source, counts in sorted(source_counts.items())
+        )
+        records_by_source_section = f'''
+    <section class="section" aria-labelledby="records-by-source-heading">
+      <h2 id="records-by-source-heading">Records by source</h2>
+      <table class="drift-table">
+        <thead><tr><th scope="col">Source</th><th scope="col">Checked</th><th scope="col">Valid</th><th scope="col">Invalid</th></tr></thead>
+        <tbody>{source_rows}</tbody>
+      </table>
+    </section>
+'''
+    else:
+        records_by_source_section = ""
+
+    if repair_outcomes is not None:
+        log_entries = int(repair_outcomes.get("log_entries", 0))
+        corrected = int(repair_outcomes.get("corrected", 0))
+        dropped = int(repair_outcomes.get("dropped", 0))
+        pending = int(repair_outcomes.get("pending", 0))
+        repair_section = f'''
+    <section class="section" aria-labelledby="repair-outcomes-heading">
+      <h2 id="repair-outcomes-heading">Repair outcomes</h2>
+      <dl class="metric-list">
+        <div class="metric"><dt>Log entries</dt><dd>{log_entries}</dd></div>
+        <div class="metric"><dt>Corrected</dt><dd>{corrected}</dd></div>
+        <div class="metric"><dt>Dropped</dt><dd>{dropped}</dd></div>
+        <div class="metric"><dt>Pending</dt><dd>{pending}</dd></div>
+      </dl>
+    </section>
+'''
+    else:
+        repair_section = ""
+
     if visible_error_rows:
-        rendered_errors: list[str] = []
+        rows_by_category: dict[str, list[str]] = {}
         for row in visible_error_rows:
-            record_number = row.get("record_number")
-            record_text = "Source" if record_number is None else str(record_number)
-            location = row.get("location") or ()
-            field_text = ".".join(str(part) for part in location) if location else "—"
-            input_value = row.get("input")
-            input_text = (
-                str(input_value)
-                if row.get("input_is_serialized")
-                else _format_input(input_value)
+            category = str(row.get("category", "")) or "uncategorized"
+            rows_by_category.setdefault(category, []).append(_render_error_row(row))
+        category_blocks: list[str] = []
+        for category, rendered_rows in sorted(rows_by_category.items()):
+            issue_word = "issue" if len(rendered_rows) == 1 else "issues"
+            category_blocks.append(
+                "<details><summary>"
+                f"{_escape(category)} — {len(rendered_rows)} {issue_word}</summary>"
+                '<div class="table-wrap">'
+                '<table class="error-table">'
+                "<thead><tr><th scope=\"col\">Source and row</th>"
+                "<th scope=\"col\">Issue</th><th scope=\"col\">Field</th>"
+                "<th scope=\"col\">Details</th></tr></thead>"
+                f"<tbody>{''.join(rendered_rows)}</tbody>"
+                "</table></div></details>"
             )
-            input_details = (
-                '<details><summary>View input</summary><pre>'
-                f"{_escape(input_text)}</pre></details>"
-                if input_value is not None
-                else ""
-            )
-            rendered_errors.append(
-                '<tr class="problem">'
-                f'<td class="mono">{_escape(row.get("source", ""))}<br>'
-                f'<span class="quiet">{_escape(record_text)}</span></td>'
-                f'<td><code>{_escape(row.get("code", "error"))}</code><br>'
-                f'<span class="quiet">{_escape(row.get("category", ""))}</span></td>'
-                f'<td class="mono">{_escape(field_text)}</td>'
-                f'<td class="issue-message">{_escape(row.get("message", ""))}{input_details}</td>'
-                '</tr>'
-            )
-        error_body = "".join(rendered_errors)
+        error_body = "".join(category_blocks)
     else:
         if reported_issue_count:
-            error_body = (
+            empty_row = (
                 '<tr><td colspan="4" class="empty-row">'
                 "Issue details were omitted by the report limit."
                 "</td></tr>"
             )
         else:
-            error_body = '<tr><td colspan="4" class="empty-row">No validation errors were recorded.</td></tr>'
+            empty_row = '<tr><td colspan="4" class="empty-row">No validation errors were recorded.</td></tr>'
+        error_body = (
+            '<div class="table-wrap">'
+            '<table class="error-table">'
+            "<thead><tr><th scope=\"col\">Source and row</th>"
+            "<th scope=\"col\">Issue</th><th scope=\"col\">Field</th>"
+            "<th scope=\"col\">Details</th></tr></thead>"
+            f"<tbody>{empty_row}</tbody>"
+            "</table></div>"
+        )
 
     omitted_count = max(0, reported_issue_count - len(visible_error_rows))
     if omitted_count:
@@ -286,7 +354,7 @@ def render_html_report(
         <div class="metric"><dt>Validation issues</dt><dd>{issue_count}</dd></div>
       </dl>
     </section>
-
+{records_by_source_section}
     <section class="section" aria-labelledby="storage-heading">
       <h2 id="storage-heading">SQLite target</h2>
       <div class="storage">
@@ -306,14 +374,9 @@ def render_html_report(
     <section class="section" aria-labelledby="issues-heading">
       <h2 id="issues-heading">Validation and source issues</h2>
       <p class="quiet">{_escape(error_note)}</p>
-      <div class="table-wrap">
-        <table class="error-table">
-          <thead><tr><th scope="col">Source and row</th><th scope="col">Issue</th><th scope="col">Field</th><th scope="col">Details</th></tr></thead>
-          <tbody>{error_body}</tbody>
-        </table>
-      </div>
+      {error_body}
     </section>
-
+{repair_section}
     <section class="section" aria-labelledby="sources-heading">
       <h2 id="sources-heading">Input sources</h2>
       <ul>{source_items}</ul>
@@ -332,6 +395,7 @@ def write_html_report(
     error_rows: Sequence[Mapping[str, Any]],
     storage: Mapping[str, Any],
     sources: Sequence[str] = (),
+    repair_outcomes: Mapping[str, int] | None = None,
 ) -> Path:
     """Write a UTF-8 standalone HTML file and return its path."""
 
@@ -342,6 +406,7 @@ def write_html_report(
         error_rows=error_rows,
         storage=storage,
         sources=sources,
+        repair_outcomes=repair_outcomes,
     )
     temporary_path: Path | None = None
     try:

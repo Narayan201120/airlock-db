@@ -60,6 +60,7 @@ def _build_repair_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=_positive_integer, default=500, help="SQLite write batch size")
     parser.add_argument("--conflict-policy", choices=("skip", "replace"), default="skip")
     parser.add_argument("--anonymize", action="store_true", help="pseudonymize configured sensitive fields before storage")
+    parser.add_argument("--decisions", metavar="PATH", help="apply a JSONL decisions file instead of an interactive session")
     return parser
 
 
@@ -348,6 +349,81 @@ def run_repair(
         f"{'anonymized' if anonymizer is not None else 'plain'}".encode("utf-8")
     ).hexdigest()
 
+    decisions_by_entry: dict[int, dict[str, Any]] | None = None
+    if getattr(args, "decisions", None):
+        decisions_path = Path(args.decisions)
+        try:
+            try:
+                file_size = decisions_path.stat().st_size
+            except OSError as exc:
+                raise ValueError(f"cannot read decisions file: {exc}") from exc
+            if file_size > 8 * 1024 * 1024:
+                raise ValueError("decisions file exceeds the 8 MiB limit")
+            try:
+                with decisions_path.open("r", encoding="utf-8") as stream:
+                    text = stream.read()
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"cannot read decisions file: {exc}") from exc
+            lines = text.splitlines()
+            _allowed_keys = {
+                "drop": {"entry", "action"},
+                "set": {"entry", "action", "field", "value"},
+                "remove": {"entry", "action", "field"},
+                "edit": {"entry", "action", "record"},
+            }
+            seen_entries: set[int] = set()
+            parsed_decisions: dict[int, dict[str, Any]] = {}
+            def _reject_constant(constant: str) -> Any:
+                raise ValueError(f"non-standard JSON constant is not supported: {constant}")
+
+            for line_number, line in enumerate(lines, start=1):
+                try:
+                    obj = json.loads(
+                        line,
+                        parse_constant=_reject_constant,
+                        parse_float=Decimal,
+                    )
+                except (ValueError, RecursionError) as exc:
+                    raise ValueError(f"decisions line {line_number}: invalid JSON: {exc}") from exc
+                if not isinstance(obj, dict):
+                    raise ValueError(f"decisions line {line_number}: each line must be a JSON object")
+                if "entry" not in obj or "action" not in obj:
+                    raise ValueError(f"decisions line {line_number}: missing required key")
+                entry_value = obj["entry"]
+                if isinstance(entry_value, bool) or not isinstance(entry_value, int) or entry_value < 1:
+                    raise ValueError(f"decisions line {line_number}: entry must be an integer >= 1")
+                action_value = obj["action"]
+                if not isinstance(action_value, str) or action_value not in _allowed_keys:
+                    raise ValueError(f"decisions line {line_number}: unknown action {action_value!r}")
+                if set(obj) != _allowed_keys[action_value]:
+                    raise ValueError(
+                        f"decisions line {line_number}: unexpected or missing keys for action {action_value!r}"
+                    )
+                if action_value == "set":
+                    field_value = obj["field"]
+                    if not isinstance(field_value, str):
+                        raise ValueError(f"decisions line {line_number}: field must be a string")
+                    if field_value not in model.model_fields:
+                        raise ValueError(
+                            f"decisions line {line_number}: 'set' field is not a model field: {field_value}"
+                        )
+                elif action_value in {"remove"}:
+                    field_value = obj["field"]
+                    if not isinstance(field_value, str):
+                        raise ValueError(f"decisions line {line_number}: field must be a string")
+                elif action_value == "edit":
+                    if not isinstance(obj["record"], dict):
+                        raise ValueError(f"decisions line {line_number}: record must be a JSON object")
+                if entry_value in seen_entries:
+                    raise ValueError(f"decisions line {line_number}: duplicate entry number {entry_value}")
+                seen_entries.add(entry_value)
+                parsed_decisions[entry_value] = obj
+            decisions_by_entry = parsed_decisions
+        except (ValueError, RecursionError) as exc:
+            reader.close()
+            print(f"airlock-db repair: {exc}", file=sys.stderr)
+            return 2
+
     try:
         progress_reader = RepairProgressReader(
             database_path,
@@ -385,6 +461,54 @@ def run_repair(
         print(f"airlock-db repair: cannot create temporary repair staging file: {exc}", file=sys.stderr)
         return 2
 
+    def _validate_and_stage(candidate_value: Any, entry_number_value: int) -> bool:
+        nonlocal staging_bytes, staged_decisions, repaired
+        try:
+            record, issues = validate_record_value(
+                candidate_value,
+                model=model,
+                constraints=constraints,
+            )
+        except Exception as exc:
+            details = type(exc).__name__ if anonymizer is not None else f"{type(exc).__name__}: {exc}"
+            print(f"Validation could not complete: {details}")
+            return False
+        if record is None:
+            print("The correction still fails validation:")
+            _display_issues(
+                _trace_for_retry(issues), redacted=anonymizer is not None
+            )
+            print("Update the record and retry, or drop it.")
+            return False
+
+        staged_candidate = candidate_value
+        if anonymizer is not None:
+            anonymized_record = (
+                anonymizer.configured_record(record, sensitive_fields)
+                if dynamic_schema is not None
+                else anonymizer.transaction(record)
+            )
+            staged_candidate = dict(candidate_value)
+            for field_name in sensitive_fields:
+                if field_name in staged_candidate:
+                    staged_candidate[field_name] = getattr(
+                        anonymized_record, field_name
+                    )
+        staged = _spool_safe_record(staged_candidate)
+        staging_bytes = _write_staged_decision(
+            spool,
+            {
+                "entry_number": entry_number_value,
+                "outcome": "corrected",
+                **staged,
+            },
+            staging_bytes,
+        )
+        staged_decisions += 1
+        repaired += 1
+        print("Corrected record passed validation and was staged with its resume checkpoint.")
+        return True
+
     try:
         for entry_number, entry in enumerate(reader, start=1):
             if next_progress is not None and next_progress[0] < entry_number:
@@ -409,6 +533,55 @@ def run_repair(
                 if entry.get("issues_truncated"):
                     print("  The error trace was truncated to keep the log entry bounded.")
                 _display_issues(entry["issues"], redacted=anonymizer is not None)
+                continue
+
+            if decisions_by_entry is not None:
+                if entry_number not in decisions_by_entry:
+                    continue
+                decision = decisions_by_entry[entry_number]
+                action = decision["action"]
+                if action == "drop":
+                    staging_bytes = _write_staged_decision(
+                        spool,
+                        {"entry_number": entry_number, "outcome": "dropped"},
+                        staging_bytes,
+                    )
+                    staged_decisions += 1
+                    dropped += 1
+                    continue
+                base_candidate = entry["record"]
+                if action == "set":
+                    if not isinstance(base_candidate, dict):
+                        raise ValueError(
+                            f"decisions entry {entry_number}: rejected record is not an object"
+                        )
+                    candidate = dict(base_candidate)
+                    candidate[decision["field"]] = decision["value"]
+                elif action == "remove":
+                    if not isinstance(base_candidate, dict):
+                        raise ValueError(
+                            f"decisions entry {entry_number}: rejected record is not an object"
+                        )
+                    candidate = dict(base_candidate)
+                    field_name = decision["field"]
+                    if field_name not in candidate:
+                        raise ValueError(
+                            f"decisions entry {entry_number}: field {field_name!r} is not present"
+                        )
+                    del candidate[field_name]
+                elif action == "edit":
+                    candidate = decision["record"]
+                    if not isinstance(candidate, dict):
+                        raise ValueError(
+                            f"decisions entry {entry_number}: record must be a JSON object"
+                        )
+                    candidate = dict(candidate)
+                else:
+                    raise ValueError(
+                        f"decisions entry {entry_number}: unknown action {action!r}"
+                    )
+                if not _validate_and_stage(candidate, entry_number):
+                    raise ValueError("the correction still fails validation")
                 continue
 
             candidate = entry["record"]
@@ -509,50 +682,8 @@ def run_repair(
                     print("Choose e, p, r, d, or q.")
                     continue
 
-                try:
-                    record, issues = validate_record_value(
-                        candidate,
-                        model=model,
-                        constraints=constraints,
-                    )
-                except Exception as exc:
-                    details = type(exc).__name__ if anonymizer is not None else f"{type(exc).__name__}: {exc}"
-                    print(f"Validation could not complete: {details}")
+                if not _validate_and_stage(candidate, entry_number):
                     continue
-                if record is None:
-                    print("The correction still fails validation:")
-                    _display_issues(
-                        _trace_for_retry(issues), redacted=anonymizer is not None
-                    )
-                    print("Update the record and retry, or drop it.")
-                    continue
-
-                staged_candidate = candidate
-                if anonymizer is not None:
-                    anonymized_record = (
-                        anonymizer.configured_record(record, sensitive_fields)
-                        if dynamic_schema is not None
-                        else anonymizer.transaction(record)
-                    )
-                    staged_candidate = dict(candidate)
-                    for field_name in sensitive_fields:
-                        if field_name in staged_candidate:
-                            staged_candidate[field_name] = getattr(
-                                anonymized_record, field_name
-                            )
-                staged = _spool_safe_record(staged_candidate)
-                staging_bytes = _write_staged_decision(
-                    spool,
-                    {
-                        "entry_number": entry_number,
-                        "outcome": "corrected",
-                        **staged,
-                    },
-                    staging_bytes,
-                )
-                staged_decisions += 1
-                repaired += 1
-                print("Corrected record passed validation and was staged with its resume checkpoint.")
                 break
 
             if quit_requested:

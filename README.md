@@ -7,7 +7,7 @@ It makes no network requests. The report embeds its CSS and SVG, so it opens on 
 ## What it does
 
 - Streams input one record at a time, so memory stays bounded as files grow.
-- Reads JSON, JSONL, NDJSON, XML, or rows from a local SQLite database.
+- Reads JSON, JSONL, NDJSON, XML, CSV, or TSV files, or rows from a local SQLite database.
 - Validates against the built-in financial-transaction model, or any client layout defined in a JSON or YAML config.
 - Never crashes on a bad row. Rejected rows are reported with per-field reasons and the run continues.
 - Reports schema drift: missing fields, undocumented extras, type mismatches, and new enum values.
@@ -73,7 +73,15 @@ Read rows straight from a local database, without exporting files first. Column 
 airlock-db --source-db C:\legacy\records.sqlite --output-dir C:\migration\run-02
 ```
 
-When the database holds several tables, choose one with `--source-table`.
+Choose tables with `--source-table`, repeated to read several in one run.
+
+### Migrate CSV or TSV files
+
+Header names must match the schema. Delimiters default by file suffix; override with `--csv-delimiter` and `--csv-encoding` for legacy exports.
+
+```powershell
+python main.py --input C:\legacy\accounts.csv --output-dir csv-output
+```
 
 ### Export a JSONL migration file
 
@@ -81,6 +89,15 @@ Write the accepted records as a clean JSONL file instead of a SQLite database. U
 
 ```powershell
 python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --output-format jsonl --output-dir jsonl-output
+```
+
+### Resume a large migration
+
+Commit and save progress every N records, then continue where an interrupted run stopped.
+
+```powershell
+python main.py --input C:\legacy\big.jsonl --commit-every 50000 --output-dir C:\migration\run-05
+python main.py --input C:\legacy\big.jsonl --commit-every 50000 --resume --output-dir C:\migration\run-05
 ```
 
 ### Validate a client-specific schema
@@ -108,7 +125,7 @@ python main.py --input examples/messy_transactions.json --constraints examples/c
 python main.py repair --error-log output/airlock_errors.jsonl --constraints examples/constraints.json
 ```
 
-Full behavior, including resume and checkpoint rules: [docs/repair.md](docs/repair.md).
+Full behavior, including resume and checkpoint rules: [docs/repair.md](docs/repair.md). Scripted fixes use `--decisions decisions.jsonl`, and `python main.py report --output-dir output` rebuilds the report with a Repair outcomes section.
 
 ### Test with real public data
 
