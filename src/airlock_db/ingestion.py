@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {".csv", ".json", ".jsonl", ".ndjson", ".tsv", ".xml"}
 _XML_RECORD_TAGS = {"transaction", "record", "row", "item", "entry", "payment"}
 _JSON_CHUNK_SIZE = 64 * 1024
-_JSONL_LINE_DELIMITER = re.compile(rb"\r\n|\r|\n")
 # These are per-record ceilings: file size and total row count remain unbounded.
 # Keep them low because Python object graphs can be much larger than source text.
 _MAX_JSON_RECORD_CHARS = 512 * 1024
@@ -481,40 +480,18 @@ def _iter_json_file(
 def _iter_bounded_jsonl_lines(
     stream: Any,
 ) -> Generator[tuple[bytes | None, int, bytes, bool], None, None]:
-    """Split LF, CRLF, and bare-CR lines while bounding each retained line."""
+    """Split LF, CRLF, and bare-CR lines while bounding each retained line.
 
-    line_parts: list[bytes] = []
-    preview = bytearray()
-    line_size = 0
-    oversized = False
-    line_has_bytes = False
+    Chunks are split on LF in C first, and the carriage-return scan only runs
+    for the rare pieces that contain one. Each emitted line is a single
+    ``bytes`` object. The preview element is the line itself, or its first
+    ``_MAX_SOURCE_PREVIEW_CHARS`` bytes for oversized lines, so callers can
+    decode it lazily and pay nothing on the common path.
+    """
+
+    carry = b""
+    carry_total = 0
     skip_lf = False
-
-    def append_segment(segment: bytes) -> None:
-        nonlocal line_size, oversized, line_has_bytes
-        if not segment:
-            return
-        line_has_bytes = True
-        line_size += len(segment)
-        if len(preview) < _MAX_SOURCE_PREVIEW_CHARS:
-            preview.extend(segment[: _MAX_SOURCE_PREVIEW_CHARS - len(preview)])
-        if not oversized:
-            if line_size <= _MAX_JSONL_RECORD_BYTES:
-                line_parts.append(segment)
-            else:
-                oversized = True
-                line_parts.clear()
-
-    def finish_line() -> tuple[bytes | None, int, bytes, bool]:
-        nonlocal line_parts, preview, line_size, oversized, line_has_bytes
-        raw = None if oversized else b"".join(line_parts)
-        result = (raw, line_size, bytes(preview), oversized)
-        line_parts = []
-        preview = bytearray()
-        line_size = 0
-        oversized = False
-        line_has_bytes = False
-        return result
 
     while True:
         chunk = stream.read(_JSON_CHUNK_SIZE)
@@ -527,17 +504,97 @@ def _iter_bounded_jsonl_lines(
         if not chunk:
             continue
 
-        segment_start = 0
-        for delimiter in _JSONL_LINE_DELIMITER.finditer(chunk):
-            append_segment(chunk[segment_start : delimiter.start()])
-            if delimiter.group() == b"\r" and delimiter.end() == len(chunk):
-                skip_lf = True
-            yield finish_line()
-            segment_start = delimiter.end()
-        append_segment(chunk[segment_start:])
+        if carry_total > _MAX_JSONL_RECORD_BYTES:
+            # The in-progress line is already too large to keep: find its end
+            # without retaining its content.
+            newline = chunk.find(b"\n")
+            carriage = chunk.find(b"\r")
+            if newline == -1:
+                delimiter = carriage
+            elif carriage == -1:
+                delimiter = newline
+            else:
+                delimiter = newline if newline < carriage else carriage
+            if delimiter == -1:
+                carry_total += len(chunk)
+                continue
+            carry_total += delimiter
+            yield (None, carry_total, carry[:_MAX_SOURCE_PREVIEW_CHARS], True)
+            carry = b""
+            carry_total = 0
+            take = delimiter + 1
+            if chunk[delimiter : delimiter + 1] == b"\r":
+                if take == len(chunk):
+                    skip_lf = True
+                elif chunk[take : take + 1] == b"\n":
+                    take += 1
+            chunk = chunk[take:]
+            if not chunk:
+                continue
 
-    if line_has_bytes:
-        yield finish_line()
+        if carry:
+            chunk = carry + chunk
+            carry = b""
+            carry_total = 0
+
+        pieces = chunk.split(b"\n")
+        tail = pieces.pop()
+        for piece in pieces:
+            if piece.endswith(b"\r"):
+                piece = piece[:-1]
+            if b"\r" in piece:
+                for part in piece.split(b"\r"):
+                    if len(part) > _MAX_JSONL_RECORD_BYTES:
+                        yield (None, len(part), part[:_MAX_SOURCE_PREVIEW_CHARS], True)
+                    else:
+                        yield (part, len(part), part, False)
+                continue
+            if len(piece) > _MAX_JSONL_RECORD_BYTES:
+                yield (None, len(piece), piece[:_MAX_SOURCE_PREVIEW_CHARS], True)
+            else:
+                yield (piece, len(piece), piece, False)
+
+        if not tail:
+            continue
+        if tail.endswith(b"\r"):
+            # The trailing carriage return is a delimiter, and a following
+            # line feed may open the next chunk.
+            content = tail[:-1]
+            parts = content.split(b"\r") if b"\r" in content else (content,)
+            for part in parts:
+                if len(part) > _MAX_JSONL_RECORD_BYTES:
+                    yield (None, len(part), part[:_MAX_SOURCE_PREVIEW_CHARS], True)
+                else:
+                    yield (part, len(part), part, False)
+            skip_lf = True
+        else:
+            if b"\r" in tail:
+                parts = tail.split(b"\r")
+                for part in parts[:-1]:
+                    if len(part) > _MAX_JSONL_RECORD_BYTES:
+                        yield (None, len(part), part[:_MAX_SOURCE_PREVIEW_CHARS], True)
+                    else:
+                        yield (part, len(part), part, False)
+                carry = parts[-1]
+            else:
+                carry = tail
+            carry_total = len(carry)
+
+    if carry_total > _MAX_JSONL_RECORD_BYTES:
+        yield (None, carry_total, carry[:_MAX_SOURCE_PREVIEW_CHARS], True)
+    elif carry:
+        yield (carry, carry_total, carry, False)
+
+
+def _line_preview_text(preview_bytes: bytes, line_size: int) -> str:
+    """Decode an issue preview on demand instead of for every valid line."""
+
+    preview = preview_bytes[:_MAX_SOURCE_PREVIEW_CHARS].decode(
+        "utf-8", errors="replace"
+    )
+    if line_size > _MAX_SOURCE_PREVIEW_CHARS:
+        preview += "... [truncated]"
+    return preview
 
 
 def _iter_json_lines(
@@ -556,9 +613,6 @@ def _iter_json_lines(
                     if raw_line is not None and raw_line.startswith(codecs.BOM_UTF8):
                         raw_line = raw_line[len(codecs.BOM_UTF8) :]
                     bom_pending = False
-                preview = preview_bytes.decode("utf-8", errors="replace")
-                if line_size > _MAX_SOURCE_PREVIEW_CHARS:
-                    preview += "... [truncated]"
                 if oversized:
                     saw_record_line = True
                     yield InputRecord(
@@ -567,7 +621,7 @@ def _iter_json_lines(
                         issue=SourceIssue(
                             "record_too_large",
                             f"JSONL record exceeds {_MAX_JSONL_RECORD_BYTES} bytes",
-                            input_value=preview,
+                            input_value=_line_preview_text(preview_bytes, line_size),
                         ),
                     )
                     continue
@@ -581,17 +635,21 @@ def _iter_json_lines(
                         line_number,
                         "encoding_error",
                         exc,
-                        input_value=preview,
+                        input_value=_line_preview_text(preview_bytes, line_size),
                     )
                     continue
-                if not line.strip():
+                if not line or line.isspace():
                     continue
                 saw_record_line = True
                 try:
                     value = _JSONL_JSON_DECODER.decode(line)
                 except DuplicateJSONKeyError as exc:
                     yield _source_issue(
-                        path, line_number, "duplicate_json_key", exc, input_value=preview
+                        path,
+                        line_number,
+                        "duplicate_json_key",
+                        exc,
+                        input_value=_line_preview_text(preview_bytes, line_size),
                     )
                     continue
                 except InvalidJSONConstantError as exc:
@@ -600,12 +658,16 @@ def _iter_json_lines(
                         line_number,
                         "invalid_json_constant",
                         exc,
-                        input_value=preview,
+                        input_value=_line_preview_text(preview_bytes, line_size),
                     )
                     continue
                 except (JSONDecodeError, ValueError, RecursionError) as exc:
                     yield _source_issue(
-                        path, line_number, "json_decode_error", exc, input_value=preview
+                        path,
+                        line_number,
+                        "json_decode_error",
+                        exc,
+                        input_value=_line_preview_text(preview_bytes, line_size),
                     )
                     continue
                 yield InputRecord(str(path), line_number, value=value)
@@ -1429,7 +1491,7 @@ def _iter_csv_file(
                         return
                     continue
                 record_number += 1
-                if sum(len(value) for value in values) > _MAX_CSV_RECORD_CHARS:
+                if sum(map(len, values)) > _MAX_CSV_RECORD_CHARS:
                     yield InputRecord(
                         str(path),
                         record_number,
@@ -1453,10 +1515,14 @@ def _iter_csv_file(
                 yield InputRecord(
                     str(path),
                     record_number,
-                    value={
-                        name: (None if value == "" else value)
-                        for name, value in zip(header, values)
-                    },
+                    value=(
+                        {
+                            name: (None if value == "" else value)
+                            for name, value in zip(header, values)
+                        }
+                        if "" in values
+                        else dict(zip(header, values))
+                    ),
                 )
         if header is None:
             yield InputRecord(
