@@ -22,3 +22,4 @@ airlock_errors.jsonl
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.serena/
