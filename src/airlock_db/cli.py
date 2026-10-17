@@ -67,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="PATH",
-        help="input file or directory (JSON, JSONL, NDJSON, XML, CSV, TSV); repeat the option to scan multiple paths",
+        help="input file or directory (JSON, JSONL, NDJSON, XML, CSV, TSV, or a .gz file or .zip archive of those); repeat the option to scan multiple paths",
     )
     parser.add_argument(
         "--source-db",

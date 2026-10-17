@@ -57,3 +57,5 @@ There is no long-running process to stop. Keep successful output directories as 
 `scripts/verify_migration_output.py` reads a completed output directory in read-only mode. Use the invocation in the Drive section. It does not modify the database or report.
 
 `scripts/verify_xml_equivalence.py INPUT [--constraints PATH | --config PATH]` migrates the same accepted records through the JSON and XML paths in temporary directories and compares every stored column. Run it whenever the XML reader changes.
+
+`scripts/verify_archive_input.py [WORKDIR]` builds gzip and zip twins of a JSONL fixture and requires stored rows and counts identical to the plain run. Run it whenever input discovery or a reader changes.

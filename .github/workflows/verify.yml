@@ -77,6 +77,9 @@ jobs:
           python main.py --input ci-basic.csv --output-dir ci-csv || test $? -eq 1
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-csv \
             --expected-checked 3 --expected-valid 2 --expected-invalid 1 --expected-rows 2
+      - name: Archive input
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_archive_input.py ci-archives
       - name: Multi-table source database
         run: |
           python - <<'PY'

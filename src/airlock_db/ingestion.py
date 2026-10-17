@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import codecs
+import contextlib
 import csv
+import io
 import json
 import logging
 import os
@@ -19,6 +21,7 @@ from typing import Any, Callable, Generator, Iterable, TextIO
 
 logger = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {".csv", ".json", ".jsonl", ".ndjson", ".tsv", ".xml"}
+ARCHIVE_SUFFIXES = {".gz", ".zip"}
 _XML_RECORD_TAGS = {"transaction", "record", "row", "item", "entry", "payment"}
 _JSON_CHUNK_SIZE = 64 * 1024
 # These are per-record ceilings: file size and total row count remain unbounded.
@@ -38,6 +41,7 @@ _MAX_XML_EVENT_GAP_BYTES = 4 * 1024 * 1024
 _MAX_XML_DOCUMENT_DEPTH = 128
 _MAX_SOURCE_DIRECTORIES = 10_000
 _MAX_DIRECTORY_CHILDREN = 10_000
+_MAX_ARCHIVE_MEMBERS = 10_000
 _XML_PARENT_CLEAR_BATCH = 128
 _MAX_DUPLICATE_KEY_PREVIEW_CHARS = 120
 _MAX_SOURCE_PREVIEW_CHARS = 300
@@ -395,10 +399,12 @@ def _iter_json_file(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
+    opener: Callable[..., Any] | None = None,
 ) -> Generator[InputRecord, None, None]:
     number = 0
     try:
-        with path.open("r", encoding="utf-8-sig", errors="strict") as stream:
+        open_stream = opener if opener is not None else path.open
+        with open_stream("rt", encoding="utf-8-sig", errors="strict") as stream:
             for value in _iter_json_values(stream):
                 number += 1
                 yield InputRecord(str(path), number, value=value)
@@ -601,12 +607,14 @@ def _iter_json_lines(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
+    opener: Callable[..., Any] | None = None,
 ) -> Generator[InputRecord, None, None]:
     line_number = 0
     saw_record_line = False
     bom_pending = True
     try:
-        with path.open("rb") as stream:
+        open_stream = opener if opener is not None else path.open
+        with open_stream("rb") as stream:
             for raw_line, line_size, preview_bytes, oversized in _iter_bounded_jsonl_lines(stream):
                 line_number += 1
                 if bom_pending and line_size:
@@ -879,6 +887,7 @@ def _iter_xml_file(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
+    opener: Callable[..., Any] | None = None,
 ) -> Generator[InputRecord, None, None]:
     record_number = 0
     stack: list[ET.Element] = []
@@ -888,9 +897,14 @@ def _iter_xml_file(
     record_depth = 0
     saw_xml_element = False
     try:
-        with path.open("rb") as stream:
+        open_stream = opener if opener is not None else path.open
+        with contextlib.ExitStack() as streams:
+            stream = streams.enter_context(open_stream("rb"))
             try:
-                has_doctype = _xml_prolog_contains_doctype(stream)
+                has_doctype = _xml_prolog_contains_doctype(
+                    stream,
+                    rewind=None if opener is not None else lambda: stream.seek(0),
+                )
             except UnicodeError as exc:
                 yield _source_issue(path, None, "encoding_error", exc)
                 return
@@ -904,6 +918,9 @@ def _iter_xml_file(
                     ),
                 )
                 return
+            if opener is not None:
+                # A compressed member restarts instead of seeking backwards.
+                stream = streams.enter_context(open_stream("rb"))
             reader = _BoundedXMLReader(stream)
             for event, element in ET.iterparse(reader, events=("start", "end")):
                 for tail_element, parent, message in pending_outside_tails:
@@ -1105,12 +1122,21 @@ def _iter_xml_file(
         )
 
 
-def _xml_prolog_contains_doctype(stream: Any) -> bool:
-    """Reject a DTD in the prolog without scanning document text or CDATA."""
+def _xml_prolog_contains_doctype(
+    stream: Any,
+    rewind: Callable[[], object] | None = None,
+) -> bool:
+    """Reject a DTD in the prolog without scanning document text or CDATA.
+
+    ``rewind`` restores the stream to its start when one stream serves both
+    the prolog check and parsing. Archive members pass ``None`` and are
+    reopened instead, because a zip member stream cannot seek backwards.
+    """
 
     max_prolog_bytes = 1024 * 1024
     prefix = stream.read(max_prolog_bytes)
-    stream.seek(0)
+    if rewind is not None:
+        rewind()
     if prefix.startswith(b"\x00\x00\xfe\xff"):
         text = prefix[4:].decode("utf-32-be", errors="strict")
     elif prefix.startswith(b"\xff\xfe\x00\x00"):
@@ -1177,6 +1203,26 @@ def _normalized_source_path(path: str | Path) -> str:
         return os.path.normcase(os.path.abspath(path))
 
 
+def _effective_suffix(path: Path) -> str:
+    """Return the content suffix of a path, looking through one .gz layer."""
+
+    suffix = path.suffix.casefold()
+    if suffix == ".gz":
+        return Path(path.name[: len(path.name) - len(path.suffix)]).suffix.casefold()
+    return suffix
+
+
+def _is_supported_source_file(path: Path) -> bool:
+    """Accept supported files, .gz of supported files, and .zip archives."""
+
+    suffix = path.suffix.casefold()
+    if suffix in SUPPORTED_SUFFIXES or suffix == ".zip":
+        return True
+    if suffix == ".gz":
+        return _effective_suffix(path) in SUPPORTED_SUFFIXES
+    return False
+
+
 def _iter_source_paths(
     path: Path,
     excluded_paths: frozenset[str],
@@ -1192,7 +1238,7 @@ def _iter_source_paths(
                     ),
                 )
                 return
-            if path.suffix.casefold() in SUPPORTED_SUFFIXES:
+            if _is_supported_source_file(path):
                 yield path
             else:
                 yield InputRecord(
@@ -1271,7 +1317,7 @@ def _iter_source_paths(
                     )
                     continue
                 if child.is_symlink():
-                    if child.suffix.casefold() in SUPPORTED_SUFFIXES:
+                    if _is_supported_source_file(child):
                         found_supported_file = True
                         yield InputRecord(
                             str(child),
@@ -1284,7 +1330,7 @@ def _iter_source_paths(
                     continue
                 if child.is_dir():
                     child_directories.append(child)
-                elif child.is_file() and child.suffix.casefold() in SUPPORTED_SUFFIXES:
+                elif child.is_file() and _is_supported_source_file(child):
                     if _normalized_source_path(child) in excluded_paths:
                         continue
                     found_supported_file = True
@@ -1307,7 +1353,7 @@ def _iter_source_paths(
     if not found_supported_file:
         yield InputRecord(
             str(path), None,
-            issue=SourceIssue("no_supported_files", "No supported JSON, JSONL, NDJSON, XML, CSV, or TSV files were found."),
+            issue=SourceIssue("no_supported_files", "No supported JSON, JSONL, NDJSON, XML, CSV, TSV, or compressed (.gz, .zip) files were found."),
         )
 
 
@@ -1430,6 +1476,7 @@ def _iter_csv_file(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
+    opener: Callable[..., Any] | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
 ) -> Generator[InputRecord, None, None]:
@@ -1453,8 +1500,9 @@ def _iter_csv_file(
         if chosen_delimiter is None:
             chosen_delimiter = "\t" if path.suffix.casefold() == ".tsv" else ","
         header: list[str] | None = None
-        with path.open(
-            "r", encoding=encoding or "utf-8-sig", errors="strict", newline=""
+        open_stream = opener if opener is not None else path.open
+        with open_stream(
+            "rt", encoding=encoding or "utf-8-sig", errors="strict", newline=""
         ) as stream:
             for values in csv.reader(stream, delimiter=chosen_delimiter):
                 if not values:
@@ -1552,6 +1600,158 @@ def _iter_csv_file(
         )
 
 
+def _records_for_suffix(
+    path: Path,
+    suffix: str,
+    *,
+    opener: Callable[..., Any] | None,
+    source_labeler: Callable[[str], str] | None,
+    csv_delimiter: str | None,
+    csv_encoding: str | None,
+) -> Generator[InputRecord, None, None] | None:
+    """Pick the reader for a content suffix, or None when unsupported."""
+
+    if suffix == ".json":
+        return _iter_json_file(path, source_labeler=source_labeler, opener=opener)
+    if suffix in {".jsonl", ".ndjson"}:
+        return _iter_json_lines(path, source_labeler=source_labeler, opener=opener)
+    if suffix == ".xml":
+        return _iter_xml_file(path, source_labeler=source_labeler, opener=opener)
+    if suffix in {".csv", ".tsv"}:
+        return _iter_csv_file(
+            path,
+            source_labeler=source_labeler,
+            opener=opener,
+            delimiter=csv_delimiter,
+            encoding=csv_encoding,
+        )
+    return None
+
+
+def _gzip_opener(path: Path) -> Callable[..., Any]:
+    """Open the decompressed text or binary stream of a .gz file."""
+
+    def opener(mode: str = "rb", **kwargs: Any):
+        import gzip
+
+        return gzip.open(path, mode, **kwargs)
+
+    return opener
+
+
+def _zip_member_opener(archive: Any, member: str) -> Callable[..., Any]:
+    """Open one zip member as a binary or text stream."""
+
+    def opener(mode: str = "rb", **kwargs: Any):
+        stream = archive.open(member)
+        if "b" in mode:
+            return stream
+        return io.TextIOWrapper(stream, **kwargs)
+
+    return opener
+
+
+def _iter_archive_file(
+    path: Path,
+    *,
+    source_labeler: Callable[[str], str] | None = None,
+    csv_delimiter: str | None = None,
+    csv_encoding: str | None = None,
+) -> Generator[InputRecord, None, None]:
+    """Stream records from a .gz file or a .zip archive without extracting.
+
+    Members pass through the same bounded readers as plain files, so size
+    limits and issue codes stay identical and nothing is written to disk.
+    Nested archives are skipped: one .gz layer, or a flat zip of supported
+    members.
+    """
+
+    suffix = path.suffix.casefold()
+    if suffix == ".gz":
+        content_suffix = _effective_suffix(path)
+        if content_suffix not in SUPPORTED_SUFFIXES:
+            yield InputRecord(
+                str(path),
+                None,
+                issue=SourceIssue(
+                    "unsupported_file_type",
+                    f"Unsupported input suffix: {path.suffix or '(none)'}",
+                ),
+            )
+            return
+        label = Path(str(path)[: len(str(path)) - len(path.suffix)])
+        records = _records_for_suffix(
+            label,
+            content_suffix,
+            opener=_gzip_opener(path),
+            source_labeler=source_labeler,
+            csv_delimiter=csv_delimiter,
+            csv_encoding=csv_encoding,
+        )
+        if records is not None:
+            try:
+                yield from records
+            finally:
+                records.close()
+        return
+
+    import zipfile
+
+    try:
+        archive = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        yield _source_issue(path, None, "archive_error", exc)
+        return
+
+    with archive:
+        infos = archive.infolist()
+        if len(infos) > _MAX_ARCHIVE_MEMBERS:
+            yield InputRecord(
+                str(path),
+                None,
+                issue=SourceIssue(
+                    "archive_member_limit",
+                    f"Archive has more than {_MAX_ARCHIVE_MEMBERS} entries; extra entries were ignored.",
+                ),
+            )
+            infos = infos[: _MAX_ARCHIVE_MEMBERS]
+        members: list[tuple[str, str]] = []
+        for info in infos:
+            if info.is_dir():
+                continue
+            member_suffix = Path(info.filename).suffix.casefold()
+            if member_suffix not in SUPPORTED_SUFFIXES:
+                continue
+            members.append((info.filename, member_suffix))
+        members.sort(key=lambda item: item[0].casefold())
+        if not members:
+            yield InputRecord(
+                str(path),
+                None,
+                issue=SourceIssue(
+                    "no_supported_files",
+                    "Archive contains no supported JSON, JSONL, NDJSON, XML, CSV, or TSV members.",
+                ),
+            )
+            return
+        for member_name, member_suffix in members:
+            label = Path(str(path) + "/" + member_name.replace("\\", "/"))
+            records = _records_for_suffix(
+                label,
+                member_suffix,
+                opener=_zip_member_opener(archive, member_name),
+                source_labeler=source_labeler,
+                csv_delimiter=csv_delimiter,
+                csv_encoding=csv_encoding,
+            )
+            if records is None:
+                continue
+            try:
+                yield from records
+            finally:
+                records.close()
+
+
 def iter_source_records(
     source: str | Path | DatabaseSource,
     *,
@@ -1580,20 +1780,23 @@ def iter_source_records(
             yield entry
             continue
         suffix = entry.suffix.casefold()
-        if suffix == ".json":
-            records = _iter_json_file(entry, source_labeler=source_labeler)
-        elif suffix in {".jsonl", ".ndjson"}:
-            records = _iter_json_lines(entry, source_labeler=source_labeler)
-        elif suffix == ".xml":
-            records = _iter_xml_file(entry, source_labeler=source_labeler)
-        elif suffix in {".csv", ".tsv"}:
-            records = _iter_csv_file(
+        if suffix in ARCHIVE_SUFFIXES:
+            records = _iter_archive_file(
                 entry,
                 source_labeler=source_labeler,
-                delimiter=csv_delimiter,
-                encoding=csv_encoding,
+                csv_delimiter=csv_delimiter,
+                csv_encoding=csv_encoding,
             )
         else:
+            records = _records_for_suffix(
+                entry,
+                suffix,
+                opener=None,
+                source_labeler=source_labeler,
+                csv_delimiter=csv_delimiter,
+                csv_encoding=csv_encoding,
+            )
+        if records is None:
             continue
         try:
             for record in records:

@@ -6,7 +6,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 
 | Option | Purpose |
 | --- | --- |
-| `--input PATH` | A JSON, JSONL, NDJSON, XML, CSV, or TSV file, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
+| `--input PATH` | A JSON, JSONL, NDJSON, XML, CSV, or TSV file, a `.gz` file or `.zip` archive of those, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
 | `--source-db PATH` | A local SQLite database read as an input source. Repeat for more databases. |
 | `--source-table NAME` | Table to read from each `--source-db`. Repeat to read several tables in one run. Defaults to the only table found; required when the database holds several. |
 | `--csv-delimiter CHAR` | Delimiter for CSV input. Defaults to a comma, or a tab for `.tsv` files. |
@@ -59,6 +59,12 @@ Resume requires the SQLite target, cannot be combined with `--anonymize` (pseudo
 `.csv` and `.tsv` files are read with the standard library `csv` module. The first non-blank line is the header; header names map to schema fields exactly like JSON keys, so missing and unknown columns produce the usual drift errors. Empty cells become `null`. A row with more values than the header defines is rejected as `csv_extra_values`.
 
 Encoding defaults to `utf-8-sig`, which tolerates a byte-order mark, and the delimiter defaults to a comma or, for `.tsv`, a tab. Override either with `--csv-delimiter` and `--csv-encoding`. A missing or duplicate header stops the file with a clear `csv_header_missing` or `csv_duplicate_header` source error.
+
+### Compressed input
+
+`.gz` files and `.zip` archives are read directly. A `.gz` file is one compressed stream, so `export.jsonl.gz` reads as JSONL. A `.zip` archive is a flat set of members: every file member with a supported suffix is validated in name order, each under its own source label, and unsupported members are skipped. Nested archives are ignored.
+
+Compression is a container only. The same readers, size limits, and issue codes apply to the decompressed bytes, and nothing is extracted to disk. A file that cannot be read as gzip or zip becomes a source-level `io_error` or `archive_error`, and the run continues.
 
 ## Repair log privacy and caps
 

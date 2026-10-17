@@ -1,13 +1,13 @@
 # AirLock DB
 
-AirLock DB is a local-first migration tool for air-gapped environments. It reads legacy JSON, JSONL, NDJSON, and XML files, validates every record against a strict schema, writes accepted records to a SQLite database, and produces one self-contained HTML report.
+AirLock DB is a local-first migration tool for air-gapped environments. It reads legacy JSON, JSONL, NDJSON, XML, CSV, and TSV files, plain or compressed, validates every record against a strict schema, writes accepted records to a SQLite database, and produces one self-contained HTML report.
 
 It makes no network requests. The report embeds its CSS and SVG, so it opens on a workstation with no internet access.
 
 ## What it does
 
 - Streams input one record at a time, so memory stays bounded as files grow.
-- Reads JSON, JSONL, NDJSON, XML, CSV, or TSV files, or rows from a local SQLite database.
+- Reads JSON, JSONL, NDJSON, XML, CSV, and TSV files, plain or compressed (`.gz`, `.zip`), or rows from a local SQLite database.
 - Validates against the built-in financial-transaction model, or any client layout defined in a JSON or YAML config.
 - Never crashes on a bad row. Rejected rows are reported with per-field reasons and the run continues.
 - Reports schema drift: missing fields, undocumented extras, type mismatches, and new enum values.
@@ -81,6 +81,15 @@ Header names must match the schema. Delimiters default by file suffix; override 
 
 ```powershell
 python main.py --input C:\legacy\accounts.csv --output-dir csv-output
+```
+
+### Migrate compressed files
+
+Read a gzip file or a zip archive directly. Archives stream, never extract, and every member with a supported suffix is validated.
+
+```powershell
+python main.py --input C:\legacy\export.jsonl.gz --output-dir gz-output
+python main.py --input C:\legacy\batch.zip --output-dir zip-output
 ```
 
 ### Export a JSONL migration file
