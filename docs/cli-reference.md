@@ -6,10 +6,13 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 
 | Option | Purpose |
 | --- | --- |
-| `--input PATH` | Required. A JSON, JSONL, NDJSON, or XML file, or a directory scanned recursively. Repeat to add sources. |
+| `--input PATH` | A JSON, JSONL, NDJSON, or XML file, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
+| `--source-db PATH` | A local SQLite database read as an input source. Repeat for more databases. |
+| `--source-table NAME` | Table to read from each `--source-db`. Defaults to the only table found; required when the database holds several. |
 | `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
 | `--config PATH` | Optional JSON or YAML file defining a dynamic record schema. |
 | `--output-dir DIR` | Output directory. Defaults to `output`. |
+| `--output-format FORMAT` | `sqlite` (default), `jsonl`, or `both`. Chooses the migration target format. |
 | `--error-log [PATH]` | Opt in to a bounded rejected-row JSONL log for repair. Relative paths land under the output directory. With no path, uses `airlock_errors.jsonl`. |
 | `--batch-size N` | SQLite write batch size, from 1 to 10,000. Defaults to 500. |
 | `--max-report-issues N` | Issue entries embedded in the report, from 0 to 10,000. Defaults to 1000. |
@@ -20,11 +23,23 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 
 ## Outputs
 
-The command writes `target_migration.db` and `airlock_report.html` into the output directory, plus `airlock_errors.jsonl` only when `--error-log` is requested.
+The command writes `airlock_report.html` into the output directory, plus `target_migration.db` for the SQLite target and `target_migration.jsonl` for the JSONL target, depending on `--output-format`. `airlock_errors.jsonl` appears only when `--error-log` is requested.
 
 - Valid rows commit together in one SQLite transaction. A large transaction needs free disk space for the database and SQLite's rollback journal.
 - Amounts are stored as normalized fixed-point strings with two fractional digits, preserving their value without exponent notation.
 - Managed version 1 databases are upgraded in 1,000-row pages when opened. AirLock DB refuses to adopt an existing unversioned or incompatible `transactions` table.
+
+### JSONL target output
+
+`--output-format jsonl` writes one compact JSON object per accepted record, in input order, to `target_migration.jsonl`. The file streams to a temporary name and renames into place, so a crash leaves either the previous file or no file. `--output-format both` writes the SQLite database and the JSONL file; each target commits independently.
+
+`--conflict-policy` applies to the SQLite target only. The JSONL file contains every accepted record, including repeated IDs within one run, and no duplicate filtering is applied.
+
+### Source database input
+
+`--source-db` opens a local SQLite file read-only. Rows stream one at a time, and the file is never modified. The table is chosen by `--source-table`, or automatically when the database contains exactly one table; several tables without `--source-table` fail with a clear source error.
+
+Column names behave exactly like JSON keys. A missing column is a missing-field error, an unknown column is an extra-field error, and every value passes through the same strict validation. A `--source-db` path cannot serve as the migration target database or the repair log.
 
 ## Repair log privacy and caps
 

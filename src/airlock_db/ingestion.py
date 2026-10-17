@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from decimal import Decimal
@@ -157,6 +158,14 @@ class InputRecord:
     record_number: int | None
     value: Any = None
     issue: SourceIssue | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSource:
+    """One table of a local SQLite database, used as a read-only input source."""
+
+    path: Path
+    table: str | None = None
 
 
 class _JSONStream:
@@ -1234,18 +1243,124 @@ def _iter_source_paths(
         )
 
 
+def _quote_sql_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _iter_database_records(
+    source: DatabaseSource,
+    *,
+    source_labeler: Callable[[str], str] | None = None,
+) -> Generator[InputRecord, None, None]:
+    """Yield rows from one table of a local SQLite database, one at a time.
+
+    The database is opened read-only. Column names act exactly like JSON
+    object keys: missing columns are missing-field errors, extra columns are
+    extra-field errors, and values pass through the same strict validation.
+    """
+
+    path = Path(source.path)
+    base_label = str(path)
+    if not path.is_file():
+        yield InputRecord(
+            base_label,
+            None,
+            issue=SourceIssue(
+                "source_db_missing", f"database file was not found: {base_label}"
+            ),
+        )
+        return
+
+    connection: sqlite3.Connection | None = None
+    record_number = 0
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        if source.table is not None:
+            if source.table not in tables:
+                yield InputRecord(
+                    base_label,
+                    None,
+                    issue=SourceIssue(
+                        "source_db_table_missing",
+                        f"table {source.table!r} was not found in {base_label}",
+                    ),
+                )
+                return
+            chosen = source.table
+        elif len(tables) == 1:
+            chosen = tables[0]
+        elif not tables:
+            yield InputRecord(
+                base_label,
+                None,
+                issue=SourceIssue(
+                    "source_db_empty", f"no tables were found in {base_label}"
+                ),
+            )
+            return
+        else:
+            preview = ", ".join(tables[:20])
+            yield InputRecord(
+                base_label,
+                None,
+                issue=SourceIssue(
+                    "source_db_table_required",
+                    f"multiple tables found in {base_label}; "
+                    f"pass --source-table to choose one: {preview}",
+                ),
+            )
+            return
+
+        label = f"{base_label} ({chosen})"
+        if source_labeler is not None:
+            label = source_labeler(label)
+        cursor = connection.execute(f"SELECT * FROM {_quote_sql_identifier(chosen)}")
+        columns = [item[0] for item in cursor.description or ()]
+        for row in cursor:
+            record_number += 1
+            yield InputRecord(label, record_number, value=dict(zip(columns, row)))
+    except (sqlite3.Error, OSError) as exc:
+        yield InputRecord(
+            base_label,
+            None,
+            issue=SourceIssue(
+                "source_db_error",
+                f"SQLite read failed: {type(exc).__name__}: {exc}",
+                incomplete=record_number > 0,
+            ),
+        )
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+
+
 def iter_source_records(
-    source: str | Path,
+    source: str | Path | DatabaseSource,
     *,
     source_labeler: Callable[[str], str] | None = None,
     excluded_paths: Iterable[str | Path] = (),
 ) -> Generator[InputRecord, None, None]:
-    """Yield decoded records from one file or recursively from a directory.
+    """Yield decoded records from one file, directory, or database table.
 
     JSON arrays are decoded incrementally. JSONL/NDJSON syntax errors are
     isolated to their physical line so subsequent lines can still be read.
-    File-level failures are yielded as records with an attached ``issue``.
+    File-level and database-level failures are yielded as records with an
+    attached ``issue``.
     """
+
+    if isinstance(source, DatabaseSource):
+        yield from _iter_database_records(source, source_labeler=source_labeler)
+        return
 
     path = Path(source)
     excluded = frozenset(_normalized_source_path(item) for item in excluded_paths)

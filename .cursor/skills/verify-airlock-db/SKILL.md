@@ -44,7 +44,7 @@ The public-data path is documented in [features/dynamic-schema.md](features/dyna
 
 ## Evidence
 
-Keep `target_migration.db`, `airlock_report.html`, and `verification.json` in the run directory. The helper checks the SQLite integrity, row count, report chart, and absence of scripts or external assets. When asked to verify anonymization, pass `--anonymized-field` once per field. The helper checks the token prefix and length used by the built-in or dynamic schema. Add `--expect-type-mismatch-note` when the run includes a type mismatch; the helper then requires the no-conversion note in the report.
+Keep `target_migration.db`, `airlock_report.html`, and `verification.json` in the run directory. The helper checks the SQLite integrity, row count, report chart, and absence of scripts or external assets. When asked to verify anonymization, pass `--anonymized-field` once per field. The helper checks the token prefix and length used by the built-in or dynamic schema. Add `--expect-type-mismatch-note` when the run includes a type mismatch; the helper then requires the no-conversion note in the report. For JSONL-only runs, add `--skip-sqlite` and `--expected-jsonl-rows N`; the helper then parses every JSONL line instead of opening a database.
 
 The command must exercise the real CLI. Do not replace it with direct calls to internal pipeline functions. A passing import or compile check is not enough.
 
@@ -55,3 +55,5 @@ There is no long-running process to stop. Keep successful output directories as 
 ## Helpers
 
 `scripts/verify_migration_output.py` reads a completed output directory in read-only mode. Use the invocation in the Drive section. It does not modify the database or report.
+
+`scripts/verify_xml_equivalence.py INPUT [--constraints PATH | --config PATH]` migrates the same accepted records through the JSON and XML paths in temporary directories and compares every stored column. Run it whenever the XML reader changes.

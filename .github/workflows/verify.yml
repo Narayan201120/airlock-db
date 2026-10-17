@@ -1,0 +1,96 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  end-to-end:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install .
+      - name: Syntax check
+        run: python -m compileall -q src
+      - name: Built-in fixture migration (expects validation issues)
+        run: |
+          set +e
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --anonymize --output-dir ci-builtin
+          code=$?
+          set -e
+          test "$code" -eq 1
+      - name: Verify built-in outputs
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-builtin \
+            --expected-checked 32 --expected-valid 8 --expected-invalid 24 --expected-rows 8 \
+            --anonymized-field account_id --expect-type-mismatch-note
+      - name: Dynamic real-data sample migration
+        run: |
+          python main.py --input examples/real_data/online_retail_sample.jsonl \
+            --config examples/real_data/online_retail_schema.json --anonymize --output-dir ci-real
+      - name: Verify dynamic outputs
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-real \
+            --expected-checked 10 --expected-valid 10 --expected-invalid 0 --expected-rows 10 \
+            --anonymized-field customer_id
+      - name: JSONL-only target
+        run: |
+          python main.py --input examples/real_data/online_retail_sample.jsonl \
+            --config examples/real_data/online_retail_schema.json --anonymize \
+            --output-format jsonl --output-dir ci-jsonl
+          test ! -f ci-jsonl/target_migration.db
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-jsonl \
+            --skip-sqlite --expected-checked 10 --expected-valid 10 --expected-invalid 0 \
+            --expected-jsonl-rows 10
+      - name: Repair workflow with resume
+        run: |
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --error-log --output-dir ci-repair || test $? -eq 1
+          printf 'd\nd\nq\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q '0 corrected, 2 dropped'
+          printf 'q\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q 'Resumed: 2'
+      - name: XML equivalence
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_xml_equivalence.py \
+            examples/messy_transactions.json --constraints examples/constraints.json
+      - name: Source database ingestion
+        run: |
+          python - <<'PY'
+          import json
+          import sqlite3
+
+          rows = json.load(open("examples/messy_transactions.json", encoding="utf-8"))
+          chosen = [rows[0], rows[3], rows[4], rows[8]]
+          connection = sqlite3.connect("legacy-source.db")
+          connection.execute(
+              "CREATE TABLE transactions (transaction_id TEXT, account_id TEXT, "
+              "posted_at TEXT, amount TEXT, currency TEXT, transaction_type TEXT, "
+              "status TEXT, counterparty TEXT, description TEXT)"
+          )
+          for row in chosen:
+              amount = row.get("amount")
+              if isinstance(amount, float):
+                  amount = repr(amount)
+              connection.execute(
+                  "INSERT INTO transactions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (
+                      row.get("transaction_id"),
+                      row.get("account_id"),
+                      row.get("posted_at"),
+                      amount,
+                      row.get("currency"),
+                      row.get("transaction_type"),
+                      row.get("status"),
+                      row.get("counterparty"),
+                      row.get("description"),
+                  ),
+              )
+          connection.commit()
+          connection.close()
+          PY
+          python main.py --source-db legacy-source.db --output-dir ci-source-db || test $? -eq 1
+          python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-source-db \
+            --expected-checked 4 --expected-valid 2 --expected-invalid 2 --expected-rows 2

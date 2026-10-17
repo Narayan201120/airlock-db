@@ -7,10 +7,11 @@ It makes no network requests. The report embeds its CSS and SVG, so it opens on 
 ## What it does
 
 - Streams input one record at a time, so memory stays bounded as files grow.
+- Reads JSON, JSONL, NDJSON, XML, or rows from a local SQLite database.
 - Validates against the built-in financial-transaction model, or any client layout defined in a JSON or YAML config.
 - Never crashes on a bad row. Rejected rows are reported with per-field reasons and the run continues.
 - Reports schema drift: missing fields, undocumented extras, type mismatches, and new enum values.
-- Commits accepted rows to SQLite in a single transaction, with `skip` or `replace` conflict handling.
+- Writes accepted records to SQLite, a JSONL migration file, or both, with `skip` or `replace` conflict handling for SQLite.
 - Optionally pseudonymizes sensitive fields with a run-scoped key that is never stored.
 - Provides an interactive repair session for rejected rows, with crash-safe checkpoints.
 
@@ -62,6 +63,24 @@ Repeat `--input`. Each path can be a supported file or a directory scanned recur
 
 ```powershell
 airlock-db --input C:\legacy\batch-a --input C:\legacy\batch-b.jsonl --output-dir C:\migration\run-01
+```
+
+### Migrate from a legacy SQLite database
+
+Read rows straight from a local database, without exporting files first. Column names must match the target schema.
+
+```powershell
+airlock-db --source-db C:\legacy\records.sqlite --output-dir C:\migration\run-02
+```
+
+When the database holds several tables, choose one with `--source-table`.
+
+### Export a JSONL migration file
+
+Write the accepted records as a clean JSONL file instead of a SQLite database. Use `both` to get both targets.
+
+```powershell
+python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --output-format jsonl --output-dir jsonl-output
 ```
 
 ### Validate a client-specific schema
@@ -123,3 +142,7 @@ python scripts/benchmark_migration.py --rows 100000 --runs 3 --batch-size 500
 - [Repair workflow](docs/repair.md): the session keys, staging, resume behavior, and privacy rules.
 - [Real-data examples](examples/real_data/README.md): public datasets, attribution, and conversion notes.
 - [Verification skill](.cursor/skills/verify-airlock-db/SKILL.md): the end-to-end checks for this repo and a reusable [output verifier](.cursor/skills/verify-airlock-db/scripts/verify_migration_output.py).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

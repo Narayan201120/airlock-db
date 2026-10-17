@@ -14,6 +14,8 @@ from typing import Sequence
 from .anonymize import RunAnonymizer
 from .constraints import ConstraintConfigError, ValidationConstraints
 from .dynamic_store import DynamicSQLiteTargetStore
+from .ingestion import DatabaseSource
+from .jsonl_target import JsonlTargetWriter
 from .pipeline import (
     DriftCategory,
     MigrationRecordResult,
@@ -65,9 +67,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "-i",
         "--input",
         action="append",
-        required=True,
+        default=None,
         metavar="PATH",
         help="input file or directory; repeat the option to scan multiple paths",
+    )
+    parser.add_argument(
+        "--source-db",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="local SQLite database read as an input source; repeat for more databases",
+    )
+    parser.add_argument(
+        "--source-table",
+        metavar="NAME",
+        help="table to read from each --source-db; defaults to the only table found",
     )
     parser.add_argument(
         "-c",
@@ -85,7 +99,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default="output",
         metavar="DIR",
-        help="directory for target_migration.db and airlock_report.html (default: output)",
+        help="directory for target_migration.db, target_migration.jsonl, and airlock_report.html (default: output)",
+    )
+    parser.add_argument(
+        "--output-format",
+        choices=("sqlite", "jsonl", "both"),
+        default="sqlite",
+        help="target output: SQLite database (default), JSONL migration file, or both",
     )
     parser.add_argument(
         "--error-log",
@@ -358,12 +378,34 @@ def _is_repair_log_file(path: Path) -> bool:
         return False
 
 
+def _source_display_label(source: Path | DatabaseSource) -> str:
+    if isinstance(source, DatabaseSource):
+        return f"{source.path} ({source.table})" if source.table else str(source.path)
+    return str(source)
+
+
 def run_migration(args: argparse.Namespace) -> int:
-    inputs = [Path(value) for value in args.input]
+    inputs = [Path(value) for value in (args.input or [])]
+    database_sources = [
+        DatabaseSource(Path(value), args.source_table)
+        for value in (args.source_db or [])
+    ]
+    sources: list[Path | DatabaseSource] = [*inputs, *database_sources]
     output_directory = Path(args.output_dir)
     database_path = output_directory / "target_migration.db"
+    jsonl_path = output_directory / "target_migration.jsonl"
     report_path = output_directory / "airlock_report.html"
+    output_format = args.output_format
+    use_sqlite = output_format in {"sqlite", "both"}
+    use_jsonl = output_format in {"jsonl", "both"}
     anonymizer = RunAnonymizer() if getattr(args, "anonymize", False) else None
+    for database_source in database_sources:
+        if _same_path(database_source.path, database_path):
+            print(
+                "airlock-db: --source-db cannot be the migration target database",
+                file=sys.stderr,
+            )
+            return 2
     dynamic_schema: DynamicSchema | None = None
     if getattr(args, "config", None):
         try:
@@ -387,13 +429,19 @@ def run_migration(args: argparse.Namespace) -> int:
             return 2
     schema_fields = dynamic_schema.field_names if dynamic_schema else _REPORT_SCHEMA_FIELDS
     record_model = dynamic_schema.model if dynamic_schema else FinancialTransaction
-    logger.info("Starting migration with %d input path(s)", len(inputs))
-    logger.info(
-        "SQLite target %s; batch size %d; duplicate policy %s",
-        database_path.name if anonymizer else database_path,
-        args.batch_size,
-        args.conflict_policy,
-    )
+    logger.info("Starting migration with %d source(s)", len(sources))
+    if use_sqlite:
+        logger.info(
+            "SQLite target %s; batch size %d; duplicate policy %s",
+            database_path.name if anonymizer else database_path,
+            args.batch_size,
+            args.conflict_policy,
+        )
+    if use_jsonl:
+        logger.info(
+            "JSONL target %s",
+            jsonl_path.name if anonymizer else jsonl_path,
+        )
 
     constraints: ValidationConstraints | None = None
     if args.constraints:
@@ -422,6 +470,8 @@ def run_migration(args: argparse.Namespace) -> int:
             else output_directory / configured_log_path
         )
         reserved_paths = [database_path, report_path]
+        if use_jsonl:
+            reserved_paths.append(jsonl_path)
         if args.config:
             reserved_paths.append(Path(args.config))
         if args.constraints:
@@ -444,6 +494,13 @@ def run_migration(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 2
+        for database_source in database_sources:
+            if _same_path(database_source.path, repair_log_path):
+                print(
+                    f"airlock-db: --error-log would overwrite an input database: {database_source.path}",
+                    file=sys.stderr,
+                )
+                return 2
 
         repair_log = RepairLogWriter(
             repair_log_path,
@@ -468,7 +525,7 @@ def run_migration(args: argparse.Namespace) -> int:
     storage_error: str | None = None
     store: SQLiteTargetStore | DynamicSQLiteTargetStore | None = None
     storage_summary: dict[str, object] = {
-        "status": "failed",
+        "status": "failed" if use_sqlite else "not used (JSONL output)",
         "database": "target_migration.db" if anonymizer else str(database_path),
         "table": (
             dynamic_schema.table_name if dynamic_schema else "transactions"
@@ -482,23 +539,38 @@ def run_migration(args: argparse.Namespace) -> int:
         "conflict_policy": args.conflict_policy,
     }
 
+    jsonl_writer: JsonlTargetWriter | None = None
+    if use_jsonl:
+        try:
+            jsonl_writer = JsonlTargetWriter(jsonl_path)
+            jsonl_writer.__enter__()
+        except OSError as exc:
+            display_path = jsonl_path.name if anonymizer else jsonl_path
+            details = type(exc).__name__ if anonymizer else str(exc)
+            print(
+                f"airlock-db: cannot create JSONL target {display_path}: {details}",
+                file=sys.stderr,
+            )
+            return 2
+
     pipeline_failed = False
     interrupted = False
     try:
-        if dynamic_schema is not None:
+        if use_sqlite and dynamic_schema is not None:
             store = DynamicSQLiteTargetStore(
                 database_path,
                 dynamic_schema,
                 batch_size=args.batch_size,
                 conflict_policy=args.conflict_policy,
             )
-        else:
+        elif use_sqlite:
             store = SQLiteTargetStore(
                 database_path,
                 batch_size=args.batch_size,
                 conflict_policy=args.conflict_policy,
             )
-        store.__enter__()
+        if store is not None:
+            store.__enter__()
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
         storage_error = _storage_error_message(exc, anonymizer)
         if anonymizer is None:
@@ -523,7 +595,7 @@ def run_migration(args: argparse.Namespace) -> int:
     if not interrupted:
         try:
             for result in iter_validated_records(
-                inputs,
+                sources,
                 metrics=metrics,
                 constraints=constraints,
                 source_labeler=(anonymizer.source_label if anonymizer else None),
@@ -552,7 +624,7 @@ def run_migration(args: argparse.Namespace) -> int:
                             else:
                                 logger.error("Could not write repair log (%s)", type(exc).__name__)
                             repair_log.abort()
-                if store is not None and result.transaction is not None:
+                if result.transaction is not None and (store is not None or jsonl_writer is not None):
                     try:
                         if anonymizer is not None and dynamic_schema is not None:
                             record = anonymizer.configured_record(
@@ -562,22 +634,32 @@ def run_migration(args: argparse.Namespace) -> int:
                             record = anonymizer.transaction(result.transaction)
                         else:
                             record = result.transaction
-                        store.add(record)
-                    except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+                        if store is not None:
+                            store.add(record)
+                        if jsonl_writer is not None:
+                            jsonl_writer.add(record)
+                    except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError) as exc:
                         storage_error = _storage_error_message(exc, anonymizer)
                         _log_storage_error(
-                            "SQLite write failed; the target transaction will be rolled back",
+                            "Target write failed; pending output will be rolled back",
                             exc,
                             anonymizer,
                         )
                         try:
-                            store.rollback()
+                            if store is not None:
+                                store.rollback()
                         except sqlite3.Error as rollback_error:
                             _log_storage_error(
                                 "SQLite rollback also failed", rollback_error, anonymizer
                             )
                         _close_store(store, anonymizer)
                         store = None
+                        if jsonl_writer is not None:
+                            try:
+                                jsonl_writer.rollback()
+                            except OSError:
+                                pass
+                            jsonl_writer = None
         except KeyboardInterrupt:
             interrupted = True
             pipeline_failed = True
@@ -687,6 +769,33 @@ def run_migration(args: argparse.Namespace) -> int:
         finally:
             _close_store(store, anonymizer)
 
+    if jsonl_writer is not None:
+        if not interrupted and not pipeline_failed and storage_error is None:
+            try:
+                jsonl_summary = jsonl_writer.commit()
+                storage_summary["jsonl"] = (
+                    jsonl_summary.path.name if anonymizer else str(jsonl_summary.path)
+                )
+                storage_summary["jsonl_rows"] = jsonl_summary.written
+                jsonl_writer = None
+            except OSError as exc:
+                storage_error = _storage_error_message(exc, anonymizer)
+                _log_storage_error("Could not write JSONL target", exc, anonymizer)
+            except KeyboardInterrupt:
+                interrupted = True
+                pipeline_failed = True
+                logger.warning("Migration interrupted while committing JSONL output")
+                storage_error = (
+                    "Migration interrupted during the JSONL write; "
+                    "the previous target file was preserved."
+                )
+        if jsonl_writer is not None:
+            try:
+                jsonl_writer.rollback()
+            except OSError:
+                pass
+            jsonl_writer = None
+
     if storage_error is not None:
         storage_summary["status"] = "failed"
         storage_summary["error"] = storage_error
@@ -698,8 +807,10 @@ def run_migration(args: argparse.Namespace) -> int:
             error_rows=report_issues,
             storage=storage_summary,
             sources=[
-                anonymizer.source_label(str(source)) if anonymizer else str(source)
-                for source in inputs
+                anonymizer.source_label(_source_display_label(source))
+                if anonymizer
+                else _source_display_label(source)
+                for source in sources
             ],
         )
     except (OSError, UnicodeError, ValueError) as exc:
@@ -715,7 +826,16 @@ def run_migration(args: argparse.Namespace) -> int:
     print(f"Valid: {metrics.valid_records}; invalid: {metrics.invalid_records}")
     database_display = database_path.name if anonymizer else database_path
     report_display = report_path.name if anonymizer else report_path
-    print(f"SQLite: {database_display} ({storage_summary.get('status')})")
+    if use_sqlite:
+        print(f"SQLite: {database_display} ({storage_summary.get('status')})")
+    else:
+        print("SQLite: not used (--output-format jsonl)")
+    if use_jsonl:
+        jsonl_display = jsonl_path.name if anonymizer else jsonl_path
+        if "jsonl_rows" in storage_summary:
+            print(f"JSONL: {jsonl_display} ({storage_summary['jsonl_rows']} records)")
+        else:
+            print(f"JSONL: {jsonl_display} (not written)")
     if repair_log is not None and repair_log_error is None:
         suffix = " (redacted; rows cannot be repaired from this log)" if anonymizer else ""
         log_display = repair_log_path.name if anonymizer else repair_log_path
@@ -778,6 +898,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return repair_main(arguments[1:])
     parser = _build_parser()
     args = parser.parse_args(arguments)
+    if not args.input and not args.source_db:
+        parser.error("at least one --input or --source-db is required")
+    if args.source_table and not args.source_db:
+        parser.error("--source-table requires --source-db")
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s: %(message)s",

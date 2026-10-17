@@ -28,55 +28,79 @@ def _token_shape(table: str, field: str) -> tuple[str, int]:
 
 
 def verify(args: argparse.Namespace) -> dict[str, object]:
-    database = args.output_dir / "target_migration.db"
     report_path = args.output_dir / "airlock_report.html"
-    if not database.is_file() or not report_path.is_file():
-        raise ValueError("output directory is missing the SQLite database or HTML report")
+    if not report_path.is_file():
+        raise ValueError("output directory is missing the HTML report")
 
-    with sqlite3.connect(f"file:{database.resolve().as_posix()}?mode=ro", uri=True) as db:
-        integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
-        tables = [
-            row[0]
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+    row_count: int | None = None
+    token_violations: dict[str, int] | None = None
+    integrity: str | None = None
+    if not args.skip_sqlite:
+        database = args.output_dir / "target_migration.db"
+        if not database.is_file():
+            raise ValueError("output directory is missing the SQLite database")
+        with sqlite3.connect(f"file:{database.resolve().as_posix()}?mode=ro", uri=True) as db:
+            integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+            tables = [
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            ]
+            targets = [
+                name
+                for name in tables
+                if name == "transactions" or name.startswith("dynamic_records_")
+            ]
+            if len(targets) != 1:
+                raise ValueError(f"expected one managed output table, found {len(targets)}")
+            table = targets[0]
+            row_count = db.execute(
+                f"SELECT COUNT(*) FROM {_identifier(table)}"
+            ).fetchone()[0]
+            columns = {
+                row[1]
+                for row in db.execute(f"PRAGMA table_info({_identifier(table)})")
+            }
+            if args.anonymized_field:
+                token_violations = {}
+                for field_name in args.anonymized_field:
+                    if field_name not in columns:
+                        raise ValueError(
+                            f"anonymized field {field_name!r} is not in the target table"
+                        )
+                    prefix, digest_length = _token_shape(table, field_name)
+                    token_pattern = prefix + "[0-9A-F]" * digest_length
+                    field = _identifier(field_name)
+                    token_violations[field_name] = db.execute(
+                        f"SELECT COUNT(*) FROM {_identifier(table)} "
+                        f"WHERE {field} IS NOT NULL AND "
+                        f"(length({field}) != ? OR {field} NOT GLOB ?)",
+                        (len(prefix) + digest_length, token_pattern),
+                    ).fetchone()[0]
+
+    jsonl_rows: int | None = None
+    if args.expected_jsonl_rows is not None:
+        jsonl_path = args.output_dir / "target_migration.jsonl"
+        if not jsonl_path.is_file():
+            raise ValueError("output directory is missing target_migration.jsonl")
+        count = 0
+        with jsonl_path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                json.loads(line)
+                count += 1
+        if count != args.expected_jsonl_rows:
+            raise ValueError(
+                f"JSONL row count mismatch: expected {args.expected_jsonl_rows}, found {count}"
             )
-        ]
-        targets = [
-            name
-            for name in tables
-            if name == "transactions" or name.startswith("dynamic_records_")
-        ]
-        if len(targets) != 1:
-            raise ValueError(f"expected one managed output table, found {len(targets)}")
-        table = targets[0]
-        row_count = db.execute(
-            f"SELECT COUNT(*) FROM {_identifier(table)}"
-        ).fetchone()[0]
-        columns = {
-            row[1]
-            for row in db.execute(f"PRAGMA table_info({_identifier(table)})")
-        }
-        token_violations = None
-        if args.anonymized_field:
-            token_violations = {}
-            for field_name in args.anonymized_field:
-                if field_name not in columns:
-                    raise ValueError(
-                        f"anonymized field {field_name!r} is not in the target table"
-                    )
-                prefix, digest_length = _token_shape(table, field_name)
-                token_pattern = prefix + "[0-9A-F]" * digest_length
-                field = _identifier(field_name)
-                token_violations[field_name] = db.execute(
-                    f"SELECT COUNT(*) FROM {_identifier(table)} "
-                    f"WHERE {field} IS NOT NULL AND "
-                    f"(length({field}) != ? OR {field} NOT GLOB ?)",
-                    (len(prefix) + digest_length, token_pattern),
-                ).fetchone()[0]
+        jsonl_rows = count
 
     report = report_path.read_text(encoding="utf-8")
     chart = re.search(
-        r'<svg\b[^>]*aria-label="([\d,]+) valid records and ([\d,]+) invalid records"',
+        r'<svg\b[^>]*aria-label="(?:([\d,]+) valid records and ([\d,]+) invalid records'
+        r'|No records were validated)"',
         report,
         re.IGNORECASE,
     )
@@ -95,7 +119,7 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         r"|@import\s+(?:url\(\s*)?['\"]?\s*(?:https?:)?//",
         report_lower,
     )
-    if integrity != "ok":
+    if integrity is not None and integrity != "ok":
         raise ValueError(f"SQLite integrity check failed: {integrity}")
     if chart is None or checked is None or "<svg" not in report_lower:
         raise ValueError("HTML report is missing its success/failure chart or record count")
@@ -104,12 +128,19 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
     if args.expect_type_mismatch_note and not type_mismatch_note_present:
         raise ValueError("HTML report is missing the no-conversion type-mismatch note")
 
+    chart_valid = (
+        int(chart.group(1).replace(",", "")) if chart.group(1) is not None else 0
+    )
+    chart_invalid = (
+        int(chart.group(2).replace(",", "")) if chart.group(2) is not None else 0
+    )
     observed = {
         "records_checked": int(checked.group(1).replace(",", "")),
-        "valid_records": int(chart.group(1).replace(",", "")),
-        "invalid_records": int(chart.group(2).replace(",", "")),
+        "valid_records": chart_valid,
+        "invalid_records": chart_invalid,
         "sqlite_rows": row_count,
         "sqlite_integrity": integrity,
+        "jsonl_rows": jsonl_rows,
         "report_standalone": True,
         "type_mismatch_note_present": type_mismatch_note_present,
         "anonymized_field_token_violations": token_violations,
@@ -118,8 +149,9 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         "records_checked": args.expected_checked,
         "valid_records": args.expected_valid,
         "invalid_records": args.expected_invalid,
-        "sqlite_rows": args.expected_rows,
     }
+    if not args.skip_sqlite:
+        expected["sqlite_rows"] = args.expected_rows
     mismatches = {
         key: {"expected": value, "observed": observed[key]}
         for key, value in expected.items()
@@ -141,11 +173,15 @@ def main() -> int:
     parser.add_argument("--expected-checked", type=int, required=True)
     parser.add_argument("--expected-valid", type=int, required=True)
     parser.add_argument("--expected-invalid", type=int, required=True)
-    parser.add_argument("--expected-rows", type=int, required=True)
+    parser.add_argument("--expected-rows", type=int)
     parser.add_argument("--anonymized-field", action="append", default=[])
     parser.add_argument("--expect-type-mismatch-note", action="store_true")
+    parser.add_argument("--skip-sqlite", action="store_true")
+    parser.add_argument("--expected-jsonl-rows", type=int)
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
+    if not args.skip_sqlite and args.expected_rows is None:
+        parser.error("--expected-rows is required unless --skip-sqlite is used")
     try:
         result = verify(args)
     except (OSError, sqlite3.Error, ValueError) as exc:

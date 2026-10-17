@@ -18,7 +18,7 @@ from uuid import UUID
 from pydantic import BaseModel, ValidationError
 
 from .constraints import ValidationConstraints
-from .ingestion import InputRecord, iter_source_records
+from .ingestion import DatabaseSource, InputRecord, iter_source_records
 from .schemas import FinancialTransaction
 
 
@@ -470,7 +470,7 @@ def _validate_input(
 
 
 def iter_validated_records(
-    sources: str | Path | Iterable[str | Path],
+    sources: str | Path | DatabaseSource | Iterable[str | Path | DatabaseSource],
     *,
     metrics: ValidationMetrics | None = None,
     constraints: ValidationConstraints | None = None,
@@ -486,8 +486,8 @@ def iter_validated_records(
     is supplied, it is updated before each result is yielded.
     """
 
-    source_list: Iterable[str | Path]
-    if isinstance(sources, (str, Path)):
+    source_list: Iterable[str | Path | DatabaseSource]
+    if isinstance(sources, (str, Path, DatabaseSource)):
         source_list = (sources,)
     else:
         source_list = sources
