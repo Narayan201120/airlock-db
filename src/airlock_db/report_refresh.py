@@ -15,6 +15,7 @@ from .pipeline import ValidationMetrics
 from .repair_log import RepairLogError, RepairLogReader
 from .repair_progress import RepairProgressReader
 from .report import write_html_report
+from .summary import sample_notice
 
 _SUMMARY_FORMAT = "airlock-db-run-summary"
 _REPAIR_PROGRESS_TABLE = "airlock_repair_progress"
@@ -155,6 +156,15 @@ def refresh_main(argv: Sequence[str] | None = None) -> int:
                 log_entries = sum(1 for _ in reader)
             repair_outcomes = _repair_outcomes(output_dir, log_entries=log_entries)
 
+        notices: list[str] = []
+        records = summary.get("records") or {}
+        notice = sample_notice(
+            int(records["sample_limit"]) if "sample_limit" in records else None,
+            bool(records.get("sample_reached")),
+        )
+        if notice is not None:
+            notices.append(notice)
+
         report_path = write_html_report(
             output_dir / "airlock_report.html",
             metrics,
@@ -162,6 +172,7 @@ def refresh_main(argv: Sequence[str] | None = None) -> int:
             storage=storage,
             sources=sources,
             repair_outcomes=repair_outcomes,
+            notices=notices,
         )
     except (OSError, ValueError, RepairLogError, sqlite3.Error) as exc:
         return _fail(str(exc))

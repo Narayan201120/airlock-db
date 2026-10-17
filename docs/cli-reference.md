@@ -9,6 +9,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 | `--input PATH` | A JSON, JSONL, NDJSON, XML, CSV, or TSV file, a `.gz` file or `.zip` archive of those, or a directory scanned recursively. Repeat to add sources. At least one `--input` or `--source-db` is required. |
 | `--source-db PATH` | A local SQLite database read as an input source. Repeat for more databases. |
 | `--source-table NAME` | Table to read from each `--source-db`. Repeat to read several tables in one run. Defaults to the only table found; required when the database holds several. |
+| `--source-query SQL` | A single SELECT statement read from each `--source-db` instead of a table. One query per database; cannot be combined with `--source-table`. |
 | `--csv-delimiter CHAR` | Delimiter for CSV input. Defaults to a comma, or a tab for `.tsv` files. |
 | `--csv-encoding NAME` | Text encoding for CSV input. Defaults to `utf-8-sig` (tolerates a BOM). |
 | `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
@@ -17,6 +18,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 | `--output-format FORMAT` | `sqlite` (default), `jsonl`, or `both`. Chooses the migration target format. |
 | `--commit-every N` | Commit accepted records and save resumable progress every N records. Requires the SQLite target. |
 | `--resume` | Skip writing records at or below a saved checkpoint from an earlier `--commit-every` run. |
+| `--sample N` | Stop after N accepted records are written. The target holds only the scanned prefix, and the report, summary, and repair log record the preview. |
 | `--error-log [PATH]` | Opt in to a bounded rejected-row JSONL log for repair. Relative paths land under the output directory. With no path, uses `airlock_errors.jsonl`. |
 | `--batch-size N` | SQLite write batch size, from 1 to 10,000. Defaults to 500. |
 | `--max-report-issues N` | Issue entries embedded in the report, from 0 to 10,000. Defaults to 1000. |
@@ -44,6 +46,8 @@ The command writes `airlock_report.html` and `airlock_summary.json` into the out
 
 `--source-db` opens a local SQLite file read-only. Rows stream one at a time, and the file is never modified. Tables are chosen by `--source-table` (repeat it to read several tables in one run), or selected automatically when the database contains exactly one table; never selected silently when several exist. Each table gets its own source label and row numbering.
 
+To read a filtered view instead, pass one `--source-query` per database and skip `--source-table` for the whole run. The statement must be a single `SELECT` (or `WITH ... SELECT`); anything else is refused before the run starts. It runs against the read-only connection, gets the `(query)` label, and its columns behave exactly like table columns. Two columns with the same name are reported as `source_db_query_columns`, because one row object cannot hold both values.
+
 Column names behave exactly like JSON keys. A missing column is a missing-field error, an unknown column is an extra-field error, and every value passes through the same strict validation. A `--source-db` path cannot serve as the migration target database or the repair log.
 
 ### Resumable migrations
@@ -53,6 +57,12 @@ For very large sources, `--commit-every N` commits accepted records and saves pe
 `--resume` skips writing records at or below the saved checkpoint when the source file is unchanged (same size and modification time). Records are still validated for the report and exit code; only storage writes and repair-log entries are skipped, and the run prints how many records it skipped. Resume matches the saved progress by schema, conflict policy, and source list.
 
 Resume requires the SQLite target, cannot be combined with `--anonymize` (pseudonyms are run-scoped), and with `--error-log` the written log covers only the records processed by that run. Without `--commit-every`, behavior is unchanged: accepted rows commit together in one transaction at the end.
+
+### Preview runs
+
+`--sample N` stops a run after N accepted records are written, for a fast sanity check of a large source. The target, the report, and `airlock_summary.json` describe only the scanned prefix; the summary carries `records.sample_limit` and `records.sample_reached`, and the report shows a preview notice. A repair log written by a sampled run is marked incomplete, so `repair` warns that the log covers only part of the sources.
+
+A preview is not a handoff. `verify` against a sampled target reports the unscanned records as missing, by design; rerun without `--sample` before verifying.
 
 ### CSV and TSV input
 
@@ -190,7 +200,7 @@ After a run, `verify` reconciles the committed target database with the sources 
 python main.py verify --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
 
-The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--csv-delimiter`, `--csv-encoding`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
+The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
 
 Duplicate keys follow the recorded policy: `skip` keeps the first occurrence, `replace` keeps the last. `--conflict-policy` overrides the policy recorded in `airlock_summary.json`, and a disagreement prints a warning. For anonymized runs the anonymized fields are excluded from the digests, because the tokens use a run-scoped key that is never stored; `--anonymized` forces that behavior when the summary is missing.
 

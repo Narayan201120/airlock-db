@@ -48,7 +48,17 @@ Accepted corrections and drop decisions are staged while you review the log. SQL
 {"entry": 4, "action": "edit", "record": {"transaction_id": "...", "account_id": "...", "posted_at": "...", "amount": "1.00", "currency": "USD", "transaction_type": "DEBIT", "status": "POSTED", "counterparty": "Example"}}
 ```
 
-Entries without decisions are left unhandled. Unknown actions, duplicate entries, and corrections that still fail validation exit with status 2 and commit nothing. Rerunning the same file resumes exactly like an interactive session.
+Entries without decisions are left unhandled. Each line must use exactly one action: `drop`, `set`, `remove`, `edit`, or `skip`. `skip` is inert; it leaves the entry unchanged. Unknown actions, duplicate entries, and corrections that still fail validation exit with status 2 and commit nothing. Rerunning the same file resumes exactly like an interactive session.
+
+### Draft the file from the log
+
+`--emit-decisions decisions.jsonl` writes a starting file instead of reviewing interactively: one `{"entry": N, "action": "skip"}` line per repairable entry, in entry order. Because every line is inert, running the template as-is changes nothing and reports how many entries it skipped.
+
+```powershell
+python main.py repair --error-log output/airlock_errors.jsonl --constraints examples/constraints.json --emit-decisions output/decisions.jsonl
+```
+
+Edit the actions you want and rerun with `--decisions output/decisions.jsonl`. Entries below the log's raw-row limit have nothing to correct, so they are left out of the template and counted in the summary line. The flag refuses to replace an existing file unless `--overwrite` is passed, cannot be combined with `--decisions`, and exits with status 2 when there is nothing to decide, such as an anonymized log.
 
 ## Resume and checkpoints
 

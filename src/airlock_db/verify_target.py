@@ -69,7 +69,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
     from .anonymize import BUILTIN_ANONYMIZED_FIELDS
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import dynamic_row, quote_identifier
-    from .ingestion import DatabaseSource
+    from .ingestion import DatabaseSource, validate_source_query
     from .pipeline import iter_validated_records
     from .schema_config import DynamicSchema, SchemaConfigError
     from .schemas import FinancialTransaction
@@ -103,6 +103,13 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         default=None,
         metavar="NAME",
         help="table read from --source-db; repeat in the order used by the run",
+    )
+    parser.add_argument(
+        "--source-query",
+        action="append",
+        default=None,
+        metavar="SQL",
+        help="SELECT statement read from --source-db in the original run; repeat in the order used",
     )
     parser.add_argument(
         "--csv-delimiter",
@@ -159,11 +166,29 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
     database_path = output_directory / _DEFAULT_TARGET_DATABASE
     inputs = [Path(value) for value in (args.input or [])]
     source_tables = tuple(args.source_table or ())
+    source_queries = tuple(args.source_query or ())
     if source_tables and not args.source_db:
         parser.error("--source-table requires --source-db")
+    if source_queries:
+        if source_tables:
+            parser.error("--source-query cannot be combined with --source-table")
+        if not args.source_db:
+            parser.error("--source-query requires --source-db")
+        if len(source_queries) != len(args.source_db):
+            parser.error("pass exactly one --source-query per --source-db")
+        try:
+            source_queries = tuple(
+                validate_source_query(value) for value in source_queries
+            )
+        except ValueError as exc:
+            parser.error(f"--source-query: {exc}")
     database_sources = [
-        DatabaseSource(Path(value), source_tables)
-        for value in (args.source_db or [])
+        DatabaseSource(
+            Path(value),
+            () if source_queries else source_tables,
+            source_queries[index] if source_queries else None,
+        )
+        for index, value in enumerate(args.source_db or [])
     ]
     sources: list[Any] = [*inputs, *database_sources]
     if not sources:

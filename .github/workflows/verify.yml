@@ -165,6 +165,9 @@ jobs:
           python main.py --source-db legacy-source.db --output-dir ci-source-db || test $? -eq 1
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-source-db \
             --expected-checked 4 --expected-valid 2 --expected-invalid 2 --expected-rows 2
+      - name: CLI previews, queries, and decisions template
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_cli_wins.py ci-cli-wins
       - name: YAML schema config
         run: |
           printf '{"ticket_id": "TKT-000001", "customer_name": "Alice", "priority": "HIGH", "opened_at": "2026-01-05T08:00:00Z"}\n' > ci-ticket.jsonl

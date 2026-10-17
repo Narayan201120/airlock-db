@@ -35,6 +35,16 @@ _MAX_CORRECTION_BYTES = 8 * 1024 * 1024
 _MAX_STAGING_ENTRY_BYTES = _MAX_CORRECTION_BYTES + 4096
 _MAX_REPAIR_STAGING_BYTES = 256 * 1024 * 1024
 
+# Exact key set required for each decision action. "skip" is inert: it marks
+# an entry as reviewed without changing it, so an emitted template is safe.
+_DECISION_ACTION_KEYS = {
+    "skip": {"entry", "action"},
+    "drop": {"entry", "action"},
+    "set": {"entry", "action", "field", "value"},
+    "remove": {"entry", "action", "field"},
+    "edit": {"entry", "action", "record"},
+}
+
 
 def _same_path(left: str | Path, right: str | Path) -> bool:
     try:
@@ -61,6 +71,12 @@ def _build_repair_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conflict-policy", choices=("skip", "replace"), default="skip")
     parser.add_argument("--anonymize", action="store_true", help="pseudonymize configured sensitive fields before storage")
     parser.add_argument("--decisions", metavar="PATH", help="apply a JSONL decisions file instead of an interactive session")
+    parser.add_argument(
+        "--emit-decisions",
+        metavar="PATH",
+        help="write a decisions template with one inert 'skip' line per repairable entry, then exit without opening a session",
+    )
+    parser.add_argument("--overwrite", action="store_true", help="replace an existing --emit-decisions template")
     return parser
 
 
@@ -326,6 +342,69 @@ def run_repair(
         print("airlock-db repair: repair log has no completion marker", file=sys.stderr)
         return 2
 
+    if getattr(args, "emit_decisions", None):
+        if getattr(args, "decisions", None):
+            reader.close()
+            print(
+                "airlock-db repair: --emit-decisions cannot be combined with --decisions",
+                file=sys.stderr,
+            )
+            return 2
+        emit_path = Path(args.emit_decisions)
+        if emit_path.exists() and not getattr(args, "overwrite", False):
+            reader.close()
+            print(
+                f"airlock-db repair: {emit_path} already exists; pass --overwrite to replace it",
+                file=sys.stderr,
+            )
+            return 2
+        if not validated_trailer["complete"]:
+            print(
+                "airlock-db repair: warning: the source migration did not finish; "
+                "the template covers only its processed records",
+                file=sys.stderr,
+            )
+        if validated_trailer["truncated"]:
+            print(
+                "airlock-db repair: warning: the repair log omitted "
+                f"{validated_trailer['omitted_records']} rejected rows at its limit",
+                file=sys.stderr,
+            )
+        template_lines: list[str] = []
+        total_entries = 0
+        for entry in reader:
+            total_entries += 1
+            if entry["repairable"]:
+                template_lines.append(
+                    json.dumps({"entry": total_entries, "action": "skip"}) + "\n"
+                )
+        reader.close()
+        if not template_lines:
+            print(
+                "airlock-db repair: this repair log has no repairable entries; "
+                "there is nothing to decide",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            emit_path.parent.mkdir(parents=True, exist_ok=True)
+            emit_path.write_text("".join(template_lines), encoding="utf-8")
+        except OSError as exc:
+            print(
+                f"airlock-db repair: cannot write the decisions template: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"Decisions template: {emit_path} ({len(template_lines)} repairable entries; "
+            f"{total_entries - len(template_lines)} entries without a raw row were left out)"
+        )
+        print(
+            "Each line is inert ('skip'). Change an action, then rerun repair with "
+            "--decisions and the same error log."
+        )
+        return 0
+
     model: type[BaseModel] = dynamic_schema.model if dynamic_schema else FinancialTransaction
     sensitive_fields = (
         dynamic_schema.anonymized_fields
@@ -337,6 +416,7 @@ def run_repair(
     summary: Any = None
     repaired = 0
     dropped = 0
+    skipped = 0
     unrepairable = 0
     skipped_conflicts = 0
     quit_requested = False
@@ -365,12 +445,7 @@ def run_repair(
             except (OSError, UnicodeError) as exc:
                 raise ValueError(f"cannot read decisions file: {exc}") from exc
             lines = text.splitlines()
-            _allowed_keys = {
-                "drop": {"entry", "action"},
-                "set": {"entry", "action", "field", "value"},
-                "remove": {"entry", "action", "field"},
-                "edit": {"entry", "action", "record"},
-            }
+            _allowed_keys = _DECISION_ACTION_KEYS
             seen_entries: set[int] = set()
             parsed_decisions: dict[int, dict[str, Any]] = {}
             def _reject_constant(constant: str) -> Any:
@@ -540,6 +615,9 @@ def run_repair(
                     continue
                 decision = decisions_by_entry[entry_number]
                 action = decision["action"]
+                if action == "skip":
+                    skipped += 1
+                    continue
                 if action == "drop":
                     staging_bytes = _write_staged_decision(
                         spool,
@@ -785,6 +863,8 @@ def run_repair(
         f"Repair complete: {repaired} corrected, {dropped} dropped, "
         f"{unrepairable} non-repairable entries."
     )
+    if skipped:
+        print(f"Skipped: {skipped} entries were marked skip and left unchanged.")
     if resumed:
         print(f"Resumed: {resumed} correction or drop decisions already saved in SQLite.")
     if store is not None:

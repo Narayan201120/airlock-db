@@ -12,7 +12,7 @@ import os
 import re
 import sqlite3
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from json import JSONDecodeError
 from pathlib import Path
@@ -171,10 +171,31 @@ class InputRecord:
 
 @dataclass(frozen=True, slots=True)
 class DatabaseSource:
-    """One or more named tables of a local SQLite database, read-only input."""
+    """One or more named tables, or one query, of a local SQLite database, read-only input."""
 
     path: Path
     tables: tuple[str, ...] = ()
+    # Excluded from repr so existing checkpoint scope strings stay stable.
+    query: str | None = field(default=None, repr=False)
+
+
+def validate_source_query(query: str) -> str:
+    """Return the statement text of a single read-only query, or raise ValueError."""
+
+    text = query.strip()
+    if not text:
+        raise ValueError("the query must not be empty")
+    if text.endswith(";"):
+        text = text[:-1].rstrip()
+    if ";" in text:
+        raise ValueError("only a single SQL statement is supported")
+    head = text.lstrip("(").lstrip()
+    keyword = head.split(None, 1)[0].upper() if head else ""
+    if keyword not in {"SELECT", "WITH"}:
+        raise ValueError(
+            "only SELECT statements are supported; start the query with SELECT or WITH"
+        )
+    return text
 
 
 class _JSONStream:
@@ -1377,6 +1398,10 @@ def _iter_database_records(
     missing from the database is reported and skipped. With ``tables``
     empty, the single table found is chosen; zero tables or several tables
     are reported as source-level issues.
+
+    With ``query`` set, that SELECT statement runs instead of any table, and
+    its rows stream under a ``(query)`` label. A query with duplicate column
+    names is reported and skipped, because the row dict cannot hold both.
     """
 
     path = Path(source.path)
@@ -1395,6 +1420,34 @@ def _iter_database_records(
     record_number = 0
     try:
         connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        if source.query is not None:
+            cursor = connection.execute(source.query)
+            query_columns = [item[0] for item in cursor.description or ()]
+            duplicate_names = sorted(
+                {name for name in query_columns if query_columns.count(name) > 1}
+            )
+            if duplicate_names:
+                yield InputRecord(
+                    base_label,
+                    None,
+                    issue=SourceIssue(
+                        "source_db_query_columns",
+                        "the query returns duplicate column names: "
+                        + ", ".join(duplicate_names),
+                    ),
+                )
+                return
+            label = f"{base_label} (query)"
+            if source_labeler is not None:
+                label = source_labeler(label)
+            table_record_number = 0
+            for row in cursor:
+                table_record_number += 1
+                record_number = table_record_number
+                yield InputRecord(
+                    label, table_record_number, value=dict(zip(query_columns, row))
+                )
+            return
         tables = [
             row[0]
             for row in connection.execute(

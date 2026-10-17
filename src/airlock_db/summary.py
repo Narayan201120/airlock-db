@@ -14,6 +14,18 @@ from ._version import __version__
 from .pipeline import ValidationMetrics
 
 SUMMARY_FORMAT = "airlock-db-run-summary"
+
+
+def sample_notice(limit: int | None, reached: bool) -> str | None:
+    """Return the preview-run notice for a sampled run, or None."""
+
+    if not reached:
+        return None
+    return (
+        f"Preview run: stopped after {limit} accepted records; "
+        "the target holds only the scanned prefix of the sources."
+    )
+
 _SUMMARY_STORAGE_KEYS = (
     "status",
     "database",
@@ -41,6 +53,8 @@ def build_run_summary(
     exit_code: int,
     issue_rows: Sequence[Mapping[str, Any]] | None = None,
     resumed_records: int = 0,
+    sample_limit: int | None = None,
+    sample_reached: bool = False,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the JSON-safe run summary for one migration."""
@@ -58,6 +72,17 @@ def build_run_summary(
         for key in _SUMMARY_STORAGE_KEYS
         if key in storage
     }
+    records: dict[str, Any] = {
+        "checked": data["records_seen"],
+        "valid": data["valid_records"],
+        "invalid": data["invalid_records"],
+        "file_errors": data["file_errors"],
+        "incomplete_files": data["incomplete_files"],
+        "resumed_records": resumed_records,
+    }
+    if sample_limit is not None:
+        records["sample_limit"] = sample_limit
+        records["sample_reached"] = bool(sample_reached)
     return {
         "format": SUMMARY_FORMAT,
         "version": 1,
@@ -66,14 +91,7 @@ def build_run_summary(
         "anonymized": anonymized,
         "schema": {"name": schema_name, "fingerprint": schema_fingerprint},
         "output": {"format": output_format, "conflict_policy": conflict_policy},
-        "records": {
-            "checked": data["records_seen"],
-            "valid": data["valid_records"],
-            "invalid": data["invalid_records"],
-            "file_errors": data["file_errors"],
-            "incomplete_files": data["incomplete_files"],
-            "resumed_records": resumed_records,
-        },
+        "records": records,
         "issues": {
             "total": sum(data["error_counts"].values()),
             "by_code": data["error_counts"],

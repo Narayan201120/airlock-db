@@ -171,6 +171,7 @@ def render_html_report(
     sources: Sequence[str] = (),
     generated_at: datetime | None = None,
     repair_outcomes: Mapping[str, int] | None = None,
+    notices: Sequence[str] = (),
 ) -> str:
     """Return a single-file report with inline styling, SVG, and error details."""
 
@@ -204,6 +205,10 @@ def render_html_report(
     source_items = "".join(f"<li class=\"mono\">{_escape(source)}</li>" for source in sources)
     if not source_items:
         source_items = '<li class="quiet">No input paths were recorded.</li>'
+    notice_block = "".join(
+        f'    <p class="quiet notice" role="note">{_escape(notice)}</p>\n'
+        for notice in notices
+    )
 
     drift_counts = data["drift_counts"]
     if drift_counts:
@@ -337,7 +342,7 @@ def render_html_report(
         <small>Created { _escape(timestamp_text) }</small>
       </div>
     </header>
-
+{notice_block}
     <section class="section summary-grid" aria-labelledby="record-outcome-heading">
       <div>
         <h2 id="record-outcome-heading">Record outcome</h2>
@@ -396,6 +401,7 @@ def write_html_report(
     storage: Mapping[str, Any],
     sources: Sequence[str] = (),
     repair_outcomes: Mapping[str, int] | None = None,
+    notices: Sequence[str] = (),
 ) -> Path:
     """Write a UTF-8 standalone HTML file and return its path."""
 
@@ -407,6 +413,7 @@ def write_html_report(
         storage=storage,
         sources=sources,
         repair_outcomes=repair_outcomes,
+        notices=notices,
     )
     temporary_path: Path | None = None
     try:

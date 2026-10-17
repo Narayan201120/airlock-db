@@ -87,10 +87,10 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 - Why: operators need a handoff check that does not depend on the repository scripts.
 - Verification: `scripts/verify_handoff.py` runs real migrations and requires an untouched target to verify, then requires changed, deleted, inserted, re-policied, and re-edited-source variants to fail with the matching counts. Wired into CI.
 
-### 13. Small CLI wins
+### 13. Small CLI wins (shipped)
 
 - What: `repair --emit-decisions` writes a decisions template for the error log, `--sample N` bounds a run for a quick previewing pass, and `--source-query SQL` reads a custom SELECT from a source database.
-- Verification: each option gets an end-to-end check in CI beside the existing repair and source-database steps.
+- Verification: `scripts/verify_cli_wins.py` drives all three through the real CLI: sampled runs stop at the requested count and mark themselves as previews, queries filter, verify, and are refused when malformed, and an emitted template stays inert until a line is edited. Wired into CI beside the repair and source-database steps.
 
 ### 14. Scale proof
 

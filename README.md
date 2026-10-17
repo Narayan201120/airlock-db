@@ -16,6 +16,7 @@ It makes no network requests. The report embeds its CSS and SVG, so it opens on 
 - Writes accepted records to SQLite, a JSONL migration file, or both, with `skip` or `replace` conflict handling for SQLite.
 - Optionally pseudonymizes sensitive fields with a run-scoped key that is never stored.
 - Provides an interactive repair session for rejected rows, with crash-safe checkpoints.
+- Previews large inputs with `--sample N`, reads custom SQL with `--source-query`, and drafts repair decisions with `repair --emit-decisions`.
 
 ## Requirements
 
@@ -75,7 +76,11 @@ Read rows straight from a local database, without exporting files first. Column 
 airlock-db --source-db C:\legacy\records.sqlite --output-dir C:\migration\run-02
 ```
 
-Choose tables with `--source-table`, repeated to read several in one run.
+Choose tables with `--source-table`, repeated to read several in one run. To read a filtered view instead, pass one `--source-query` per database:
+
+```powershell
+airlock-db --source-db C:\legacy\records.sqlite --source-query "SELECT * FROM records WHERE status = 'POSTED'" --output-dir C:\migration\run-03
+```
 
 ### Migrate CSV or TSV files
 
@@ -109,6 +114,14 @@ Commit and save progress every N records, then continue where an interrupted run
 ```powershell
 python main.py --input C:\legacy\big.jsonl --commit-every 50000 --output-dir C:\migration\run-05
 python main.py --input C:\legacy\big.jsonl --commit-every 50000 --resume --output-dir C:\migration\run-05
+```
+
+### Preview a large migration
+
+Stop after N accepted records to sanity-check a file before the full run. The output directory holds only the scanned prefix, and the report, the run summary, and any repair log record that the run was a preview.
+
+```powershell
+python main.py --input C:\legacy\big.jsonl --sample 5000 --output-dir preview-output
 ```
 
 ### Validate a client-specific schema
@@ -155,7 +168,7 @@ python main.py --input examples/messy_transactions.json --constraints examples/c
 python main.py repair --error-log output/airlock_errors.jsonl --constraints examples/constraints.json
 ```
 
-Full behavior, including resume and checkpoint rules: [docs/repair.md](docs/repair.md). Scripted fixes use `--decisions decisions.jsonl`, and `python main.py report --output-dir output` rebuilds the report with a Repair outcomes section.
+Full behavior, including resume and checkpoint rules: [docs/repair.md](docs/repair.md). `repair --emit-decisions decisions.jsonl` writes an inert template with one `skip` line per repairable entry to edit, scripted fixes use `--decisions decisions.jsonl`, and `python main.py report --output-dir output` rebuilds the report with a Repair outcomes section.
 
 ### Test with real public data
 

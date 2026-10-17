@@ -86,6 +86,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="table to read from each --source-db; repeat for several tables; defaults to the only table found",
     )
     parser.add_argument(
+        "--source-query",
+        action="append",
+        default=None,
+        metavar="SQL",
+        help="SELECT statement to read from each --source-db instead of a table; one query per database",
+    )
+    parser.add_argument(
         "--csv-delimiter",
         type=_single_character,
         metavar="CHAR",
@@ -125,6 +132,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_integer_in_range(1, 100_000_000),
         metavar="N",
         help="commit accepted records and save progress every N records (enables resumable runs)",
+    )
+    parser.add_argument(
+        "--sample",
+        type=_integer_in_range(1, 100_000_000),
+        metavar="N",
+        help="stop after N accepted records are written (preview run: the target holds only the scanned prefix)",
     )
     parser.add_argument(
         "--resume",
@@ -412,6 +425,8 @@ def _source_display_label(source: Path | DatabaseSource) -> str:
     from .ingestion import DatabaseSource
 
     if isinstance(source, DatabaseSource):
+        if source.query is not None:
+            return f"{source.path} (query)"
         if source.tables:
             return f"{source.path} ({', '.join(source.tables)})"
         return str(source.path)
@@ -422,7 +437,7 @@ def run_migration(args: argparse.Namespace) -> int:
     from .anonymize import RunAnonymizer
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import DynamicSQLiteTargetStore
-    from .ingestion import DatabaseSource
+    from .ingestion import DatabaseSource, validate_source_query
     from .jsonl_target import JsonlTargetWriter
     from .pipeline import DriftCategory, ValidationMetrics, iter_validated_records
     from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
@@ -430,13 +445,40 @@ def run_migration(args: argparse.Namespace) -> int:
     from .schema_config import DynamicSchema, SchemaConfigError
     from .schemas import FinancialTransaction
     from .sqlite_store import SQLiteTargetStore, read_migration_progress
-    from .summary import build_run_summary, write_run_summary
+    from .summary import build_run_summary, sample_notice, write_run_summary
 
     inputs = [Path(value) for value in (args.input or [])]
     source_tables = tuple(getattr(args, "source_table", None) or ())
+    source_queries = tuple(getattr(args, "source_query", None) or ())
+    source_db_values = tuple(args.source_db or ())
+    if source_queries:
+        if source_tables:
+            print(
+                "airlock-db: --source-query cannot be combined with --source-table; "
+                "each --source-db takes one query or a table list",
+                file=sys.stderr,
+            )
+            return 2
+        if len(source_queries) != len(source_db_values):
+            print(
+                "airlock-db: pass exactly one --source-query per --source-db",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            source_queries = tuple(
+                validate_source_query(value) for value in source_queries
+            )
+        except ValueError as exc:
+            print(f"airlock-db: --source-query: {exc}", file=sys.stderr)
+            return 2
     database_sources = [
-        DatabaseSource(Path(value), source_tables)
-        for value in (args.source_db or [])
+        DatabaseSource(
+            Path(value),
+            () if source_queries else source_tables,
+            source_queries[index] if source_queries else None,
+        )
+        for index, value in enumerate(source_db_values)
     ]
     sources: list[Path | DatabaseSource] = [*inputs, *database_sources]
     output_directory = Path(args.output_dir)
@@ -640,6 +682,9 @@ def run_migration(args: argparse.Namespace) -> int:
 
     resumed_records = 0
     stored_since_checkpoint = 0
+    sample_limit = getattr(args, "sample", None)
+    sample_reached = False
+    written_records = 0
     last_processed: dict[str, tuple[int, int, float]] = {}
     stat_cache: dict[str, tuple[int, float] | None] = {}
     resume_progress: dict[str, tuple[int, int, float]] = {}
@@ -789,6 +834,7 @@ def run_migration(args: argparse.Namespace) -> int:
                             stored_since_checkpoint += 1
                         if jsonl_writer is not None:
                             jsonl_writer.add(record)
+                        written_records += 1
                         if (
                             store is not None
                             and commit_every is not None
@@ -830,6 +876,9 @@ def run_migration(args: argparse.Namespace) -> int:
                             except OSError:
                                 pass
                             jsonl_writer = None
+                if sample_limit is not None and written_records >= sample_limit:
+                    sample_reached = True
+                    break
         except KeyboardInterrupt:
             interrupted = True
             pipeline_failed = True
@@ -883,6 +932,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 complete=(
                     not interrupted
                     and not pipeline_failed
+                    and not sample_reached
                     and metrics.file_errors == 0
                     and metrics.incomplete_files == 0
                 )
@@ -1011,12 +1061,17 @@ def run_migration(args: argparse.Namespace) -> int:
         )
 
     try:
+        report_notices: list[str] = []
+        notice = sample_notice(sample_limit, sample_reached)
+        if notice is not None:
+            report_notices.append(notice)
         write_html_report(
             report_path,
             metrics,
             error_rows=report_issues,
             storage=storage_summary,
             sources=source_labels,
+            notices=report_notices,
         )
     except (OSError, UnicodeError, ValueError) as exc:
         display_path = report_path.name if anonymizer else report_path
@@ -1050,6 +1105,8 @@ def run_migration(args: argparse.Namespace) -> int:
                 exit_code=exit_code,
                 issue_rows=report_issues,
                 resumed_records=resumed_records,
+                sample_limit=sample_limit,
+                sample_reached=sample_reached,
             ),
         )
     except (OSError, TypeError, ValueError) as exc:
@@ -1077,6 +1134,8 @@ def run_migration(args: argparse.Namespace) -> int:
             print(f"JSONL: {jsonl_display} (not written)")
     if resumed_records:
         print(f"Resumed: {resumed_records} records at or below the saved checkpoint were skipped")
+    if sample_reached:
+        print(f"Sample: stopped after {sample_limit} accepted records (preview run)")
     if repair_log is not None and repair_log_error is None:
         suffix = " (redacted; rows cannot be repaired from this log)" if anonymizer else ""
         log_display = repair_log_path.name if anonymizer else repair_log_path
