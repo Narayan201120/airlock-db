@@ -90,12 +90,13 @@ def _clean_text(value: Any) -> Any:
 
     if not isinstance(value, str):
         return value
-    if value.isascii():
-        # For ASCII, non-printable means exactly the control code points that
-        # the previous regular-expression scan rejected.
-        if not value.isprintable():
-            raise ValueError("must not contain control, format, or surrogate characters")
-    elif any(category(char) in {"Cc", "Cf", "Cs"} for char in value):
+    if value.isprintable():
+        return value.strip()
+    # Non-printable values either hold refused characters (control, format,
+    # surrogate) or accepted ones such as unassigned or private-use code
+    # points. Every non-printable ASCII character is a control code point, so
+    # the ASCII branch needs no category scan.
+    if value.isascii() or any(category(char) in {"Cc", "Cf", "Cs"} for char in value):
         raise ValueError("must not contain control, format, or surrogate characters")
     return value.strip()
 
@@ -153,8 +154,10 @@ class FinancialTransaction(BaseModel):
         except ValueError as exc:
             raise ValueError("must be an ISO-8601 datetime with a timezone") from exc
 
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("must include a timezone offset")
+        # The full-match pattern guarantees a timezone designator, and
+        # fromisoformat rejects offsets it cannot represent, so the parsed
+        # value always carries a usable timezone here. The after-validator
+        # still guards datetime instances that skip this transformation.
         return parsed.astimezone(timezone.utc)
 
     @field_validator("amount", mode="before")
@@ -216,6 +219,8 @@ class FinancialTransaction(BaseModel):
     @field_validator("posted_at")
     @classmethod
     def require_timezone_and_normalize_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is timezone.utc:
+            return value
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("must include a timezone offset")
         return value.astimezone(timezone.utc)

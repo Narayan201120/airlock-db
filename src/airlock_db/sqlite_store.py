@@ -142,19 +142,6 @@ def _estimate_row_size(row: tuple[Any, ...]) -> int:
     return size
 
 
-def _rows_to_insert_skip_policy(
-    batch: list[tuple[Any, ...]],
-    first_rows: dict[str, tuple[Any, ...]],
-    inserted_ids: set[str],
-) -> list[tuple[Any, ...]] | tuple[tuple[Any, ...], ...]:
-    """Keep skip-policy SQLite writes limited to IDs that can be inserted."""
-
-    return tuple(
-        row for transaction_id, row in first_rows.items()
-        if transaction_id in inserted_ids
-    )
-
-
 def _progress_label(value: str, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"migration progress {name} must be a non-empty string")
@@ -372,6 +359,7 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
         self._repair_progress_ready = False
         self._migration_progress_ready = False
         self._index_pending = False
+        self._select_first = False
 
     def __enter__(self) -> SQLiteTargetStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -524,51 +512,84 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
             raise RuntimeError("SQLite target store is not open")
         submitted = len(self._batch)
         unique_rows = {row[0]: row for row in self._batch}
-        existing = self._existing_rows(tuple(unique_rows))
-        inserted_ids = set(unique_rows) - existing.keys()
-        self._duplicates += submitted - len(inserted_ids)
-        if len(unique_rows) == submitted:
-            # Every ID is unique inside this batch, so intra-batch value
-            # conflicts are impossible. Alias the map instead of rebuilding it.
-            first_rows: dict[str, tuple[Any, ...]] = unique_rows
-            batch_conflicts: set[str] = set()
-        else:
-            first_rows = {}
-            batch_conflicts = set()
+        batch_conflicts: set[str] = set()
+        first_rows: dict[str, tuple[Any, ...]] = (
+            unique_rows if len(unique_rows) == submitted else {}
+        )
+        if len(unique_rows) != submitted:
             for row in self._batch:
                 transaction_id = str(row[0])
                 first_row = first_rows.setdefault(transaction_id, row)
                 if tuple(first_row[1:]) != tuple(row[1:]):
                     batch_conflicts.add(transaction_id)
-        persisted_conflicts = {
-            transaction_id
-            for transaction_id, row in unique_rows.items()
-            if transaction_id in existing and tuple(row[1:]) != existing[transaction_id]
-        }
-        self._conflicts += len(batch_conflicts | persisted_conflicts)
         if self.conflict_policy == "replace":
-            self._updated += sum(
-                1
+            existing = self._existing_rows(tuple(unique_rows))
+            inserted_ids = set(unique_rows) - existing.keys()
+            self._duplicates += submitted - len(inserted_ids)
+            conflicting = {
+                transaction_id
                 for transaction_id, row in unique_rows.items()
-                if transaction_id in existing and tuple(row[1:]) != existing[transaction_id]
-            )
-            statement = _REPLACE_TRANSACTION
+                if transaction_id in existing
+                and tuple(row[1:]) != existing[transaction_id]
+            }
+            self._conflicts += len(batch_conflicts | conflicting)
+            self._updated += len(conflicting)
+            before = self._connection.total_changes
+            self._connection.executemany(_REPLACE_TRANSACTION, unique_rows.values())
+            self._inserted += len(inserted_ids)
+        elif self._select_first:
+            # Duplicate-heavy runs wrote a squashed batch in earlier releases:
+            # submitting rows ON CONFLICT would discard costs more than the
+            # stored-row lookups. Leave this mode once a batch is all new.
+            existing = self._existing_rows(tuple(unique_rows))
+            inserted_ids = set(unique_rows) - existing.keys()
+            self._duplicates += submitted - len(inserted_ids)
+            conflicting = {
+                transaction_id
+                for transaction_id, row in unique_rows.items()
+                if transaction_id in existing
+                and tuple(row[1:]) != existing[transaction_id]
+            }
+            self._conflicts += len(batch_conflicts | conflicting)
+            if len(inserted_ids) == submitted:
+                rows_to_write = self._batch
+                self._select_first = False
+            else:
+                # first-rows wins for repeated IDs, matching row order.
+                rows_to_write = tuple(
+                    row
+                    for transaction_id, row in first_rows.items()
+                    if transaction_id in inserted_ids
+                )
+            before = self._connection.total_changes
+            self._connection.executemany(_INSERT_TRANSACTION, rows_to_write)
+            self._inserted += self._connection.total_changes - before
         else:
-            statement = _INSERT_TRANSACTION
-        before = self._connection.total_changes
-        if self.conflict_policy == "replace":
-            rows_to_write = unique_rows.values()
-        elif len(inserted_ids) == submitted:
-            # Keep the no-duplicate path allocation-free for the common case.
-            rows_to_write = self._batch
-        else:
-            # This path filters repeated IDs in a batch and IDs already stored.
-            rows_to_write = _rows_to_insert_skip_policy(
-                self._batch, first_rows, inserted_ids
-            )
-        self._connection.executemany(statement, rows_to_write)
-        inserted = self._connection.total_changes - before
-        self._inserted += len(inserted_ids) if self.conflict_policy == "replace" else inserted
+            # Submit the raw batch first. ON CONFLICT DO NOTHING keeps the
+            # first occurrence of a repeated ID and ignores stored IDs, so the
+            # insert itself decides which rows were new. The stored rows are
+            # only read back when something was skipped.
+            before = self._connection.total_changes
+            self._connection.executemany(_INSERT_TRANSACTION, self._batch)
+            inserted = self._connection.total_changes - before
+            skipped = submitted - inserted
+            self._inserted += inserted
+            self._duplicates += skipped
+            if skipped:
+                if skipped > submitted // 4:
+                    self._select_first = True
+                # Rows this batch inserted compare equal to themselves, so the
+                # extra lookups cannot inflate the conflict count.
+                existing = self._existing_rows(tuple(unique_rows))
+                conflicting = {
+                    transaction_id
+                    for transaction_id, row in unique_rows.items()
+                    if transaction_id in existing
+                    and tuple(row[1:]) != existing[transaction_id]
+                }
+                self._conflicts += len(batch_conflicts | conflicting)
+            else:
+                self._conflicts += len(batch_conflicts)
         self._batch.clear()
         self._batch_estimated_bytes = 0
 

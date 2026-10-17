@@ -75,6 +75,7 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
         self._committed = False
         self._repair_progress_ready = False
         self._migration_progress_ready = False
+        self._select_first = False
         self._field_names = tuple(field.name for field in schema.fields)
         self._id_index = self._field_names.index(schema.id_field)
         self._quoted_fields = tuple(_quote_identifier(name) for name in self._field_names)
@@ -255,37 +256,70 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
             if self.conflict_policy == "replace":
                 last_rows[key] = row
 
-        keys = tuple(first_rows)
-        existing = self._existing_rows(keys)
-        candidates = last_rows if self.conflict_policy == "replace" else first_rows
-        persisted_conflicts = {
-            key for key, row in candidates.items()
-            if key in existing and row != existing[key]
-        }
-        self._conflicts += len(batch_conflicts | persisted_conflicts)
-        inserted_keys = set(first_rows) - set(existing)
-        self._duplicates += submitted - len(inserted_keys)
         if self.conflict_policy == "replace":
-            self._updated += sum(
-                1
-                for key, row in last_rows.items()
+            existing = self._existing_rows(tuple(first_rows))
+            persisted_conflicts = {
+                key for key, row in last_rows.items()
                 if key in existing and row != existing[key]
+            }
+            self._conflicts += len(batch_conflicts | persisted_conflicts)
+            inserted_keys = set(first_rows) - set(existing)
+            self._duplicates += submitted - len(inserted_keys)
+            self._updated += len(persisted_conflicts)
+            self._connection.executemany(
+                self._insert_sql(replace=True), tuple(last_rows.values())
             )
-            rows_to_write = tuple(last_rows.values())
-        elif len(inserted_keys) == submitted:
-            # Avoid an allocation when every submitted row is a new unique key.
-            rows_to_write = self._batch
+            self._inserted += len(inserted_keys)
         else:
-            # first_rows preserves first-row-wins for duplicate keys in a batch.
-            rows_to_write = tuple(
-                row for key, row in first_rows.items() if key in inserted_keys
-            )
-
-        self._connection.executemany(
-            self._insert_sql(replace=self.conflict_policy == "replace"),
-            rows_to_write,
-        )
-        self._inserted += len(inserted_keys)
+            if self._select_first:
+                # Duplicate-heavy runs wrote a squashed batch in earlier
+                # releases: submitting rows ON CONFLICT would discard costs
+                # more than the stored-row lookups. Leave this mode once a
+                # batch is all new.
+                existing = self._existing_rows(tuple(first_rows))
+                inserted_keys = set(first_rows) - set(existing)
+                self._duplicates += submitted - len(inserted_keys)
+                persisted_conflicts = {
+                    key for key, row in first_rows.items()
+                    if key in existing and row != existing[key]
+                }
+                self._conflicts += len(batch_conflicts | persisted_conflicts)
+                if len(inserted_keys) == submitted:
+                    rows_to_write = self._batch
+                    self._select_first = False
+                else:
+                    # first_rows preserves first-row-wins for repeated keys.
+                    rows_to_write = tuple(
+                        row for key, row in first_rows.items() if key in inserted_keys
+                    )
+                self._connection.executemany(
+                    self._insert_sql(replace=False), rows_to_write
+                )
+                self._inserted += len(inserted_keys)
+            else:
+                # Submit the raw batch first. ON CONFLICT DO NOTHING keeps the
+                # first occurrence of a repeated key and ignores stored keys,
+                # so the insert itself decides which rows were new. The stored
+                # rows are only read back when something was skipped.
+                before = self._connection.total_changes
+                self._connection.executemany(self._insert_sql(replace=False), self._batch)
+                inserted = self._connection.total_changes - before
+                skipped = submitted - inserted
+                self._inserted += inserted
+                self._duplicates += skipped
+                if skipped:
+                    if skipped > submitted // 4:
+                        self._select_first = True
+                    # Rows this batch inserted compare equal to themselves, so
+                    # the extra lookups cannot inflate the conflict count.
+                    existing = self._existing_rows(tuple(first_rows))
+                    persisted_conflicts = {
+                        key for key, row in first_rows.items()
+                        if key in existing and row != existing[key]
+                    }
+                    self._conflicts += len(batch_conflicts | persisted_conflicts)
+                else:
+                    self._conflicts += len(batch_conflicts)
         self._batch.clear()
         self._batch_estimated_bytes = 0
 
