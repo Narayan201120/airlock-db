@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, and richer reports. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV, multi-table source database, repair resume, scripted decisions with report refresh, XML equivalence, source-database ingestion, checkpoint/resume) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
+Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, and richer reports. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV, multi-table source database, repair resume, scripted decisions with report refresh, XML equivalence, source-database ingestion, checkpoint/resume) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release. Tier 4 is in progress; each item lands as its own verified commit.
 
 ## Ground rules
 
@@ -65,6 +65,38 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 ### 9. Report UX without scripts
 
 - Per-source breakdown table and issue-category grouping using `<details>` only. No JavaScript, by design.
+
+## Tier 4: in progress (target v0.3.0)
+
+### 10. Compressed inputs
+
+- What: read `.gz` files and `.zip` archives directly, streaming members through the same bounded readers. No extraction to disk and no nesting: one `.gz` layer over a supported suffix, or a flat zip of supported members.
+- Why: air-gapped handoffs arrive as archives. Extracting them first writes unvalidated PII to disk.
+- Scope: the same suffix list and size limits apply to the uncompressed content. Unsupported members are skipped, and a bad archive is a source error, not a crash.
+- Verification: `scripts/verify_archive_input.py` builds gzip and zip twins of a checked fixture, migrates them, and requires stored rows and counts identical to the plain-file run. Wired into CI.
+
+### 11. Schema inference command
+
+- What: `airlock-db infer --input FILE` writes a draft dynamic-schema config from observed records. Inferred types are conservative, and the draft marks fields whose values conflict.
+- Why: writing a client schema by hand is the slowest step for a new legacy layout.
+- Verification: infer a draft from the messy fixture, migrate with that draft, and require zero drift for the fields the draft claims.
+
+### 12. Verification command
+
+- What: `airlock-db verify --input ... --output-dir DIR` reconciles the committed target database against the records the run accepted: counts plus per-record digests.
+- Why: operators need a handoff check that does not depend on the repository scripts.
+- Verification: tampered rows and tampered inputs must each fail with a clear message.
+
+### 13. Small CLI wins
+
+- What: `repair --emit-decisions` writes a decisions template for the error log, `--sample N` bounds a run for a quick previewing pass, and `--source-query SQL` reads a custom SELECT from a source database.
+- Verification: each option gets an end-to-end check in CI beside the existing repair and source-database steps.
+
+### 14. Scale proof
+
+- What: a scripted 1M-row soak run that records wall time and peak memory, plus a reduced variant in CI.
+- Why: prove the streaming story at scale before the input surface grows again.
+- Verification: the soak script asserts stored rows, summary counts, and a memory ceiling; CI runs the reduced variant.
 
 ## Explicitly out of scope
 
