@@ -1,0 +1,335 @@
+[
+  {
+    "transaction_id": "3f8a1c2e-4b6d-4e9a-8f1c-2d5e7a9b0c11",
+    "account_id": "ACC-1001",
+    "posted_at": "2026-01-15T09:30:00Z",
+    "amount": 125.50,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Northwind Trading Co",
+    "description": "Monthly office supplies order, invoice 4471"
+  },
+  {
+    "transaction_id": "8b2d4f6a-1c3e-4a5b-9d7e-0f1a2b3c4d5e",
+    "account_id": "ACC_2200",
+    "posted_at": "2026-02-03T16:45:00+02:00",
+    "amount": 89.99,
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "Blue Yonder Airlines",
+    "description": "Ticket refund for cancelled flight 221"
+  },
+  {
+    "transaction_id": "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+    "account_id": "MERCHANT77",
+    "posted_at": "2026-02-20T11:05:00Z",
+    "amount": 2450.00,
+    "currency": "GBP",
+    "transaction_type": "REFUND",
+    "status": "REVERSED",
+    "counterparty": "Harbour Freight Logistics"
+  },
+  {
+    "transaction_id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+    "account_id": "BANK-OPS-04",
+    "posted_at": "2026-03-08T14:15:00+05:30",
+    "amount": 432.75,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "PENDING",
+    "counterparty": "Cobalt Analytics LLC",
+    "description": "Consulting retainer for March 2026"
+  },
+  {
+    "account_id": "ACC-1002",
+    "posted_at": "2026-01-18T08:00:00Z",
+    "amount": 64.20,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Northwind Trading Co",
+    "description": "Printer toner restock"
+  },
+  {
+    "transaction_id": "7c9d1e3f-5a7b-4c9e-8d1f-3a5b7c9d1e3f",
+    "account_id": "ACC-1003",
+    "posted_at": "2026-01-19T12:30:00Z",
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "Blue Yonder Airlines"
+  },
+  {
+    "transaction_id": "9e1f3a5b-7c9d-4e1f-a3b5-c7d9e1f3a5b7",
+    "account_id": "ACC-1004",
+    "posted_at": "2026-01-20T17:45:00Z",
+    "amount": 310.00,
+    "currency": "GBP",
+    "transaction_type": "DEBIT",
+    "counterparty": "Harbour Freight Logistics",
+    "description": "Warehouse handling fee"
+  },
+  {
+    "transaction_id": "2b4d6f8a-1c3e-5a7b-9d1f-3b5d7f9a1c3e",
+    "account_id": "ACC-1005",
+    "posted_at": "2026-01-21T10:10:00Z",
+    "amount": "19.99",
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Cobalt Analytics LLC"
+  },
+  {
+    "transaction_id": "4d6f8a1c-3e5a-7b9d-1f3b-5d7f9a1c3e5a",
+    "account_id": "ACC-1006",
+    "posted_at": 1769006400,
+    "amount": 75.00,
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "PENDING",
+    "counterparty": "Northwind Trading Co"
+  },
+  {
+    "transaction_id": "6f8a1c3e-5a7b-9d1f-3b5d-7f9a1c3e5a7b",
+    "account_id": "ACC-1007",
+    "posted_at": "2026-01-23T09:15:00Z",
+    "amount": 18.40,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "",
+    "description": "Card top-up at terminal 12"
+  },
+  {
+    "transaction_id": "8a1c3e5a-7b9d-1f3b-5d7f-9a1c3e5a7b9d",
+    "account_id": "ACC-1008",
+    "posted_at": "2026-01-24T13:20:00Z",
+    "amount": 55.25,
+    "currency": "GBP",
+    "transaction_type": "REFUND",
+    "status": "POSTED",
+    "counterparty": "Blue Yonder Airlines",
+    "description": ""
+  },
+  {
+    "transaction_id": "1c3e5a7b-9d1f-3b5d-7f9a-1c3e5a7b9d1f",
+    "account_id": " ACC-1009 ",
+    "posted_at": "2026-01-26T07:45:00Z",
+    "amount": 240.00,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "   ",
+    "description": "Freight surcharge"
+  },
+  {
+    "transaction_id": "3e5a7b9d-1f3b-5d7f-9a1c-3e5a7b9d1f3b",
+    "account_id": "ACC-1010",
+    "posted_at": "2026-01-27T15:05:00Z",
+    "amount": 129.99,
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "Northwind Trading Co",
+    "description": "Settlement\u0000batch\u001f12\nfinal"
+  },
+  {
+    "transaction_id": "5a7b9d1f-3b5d-7f9a-1c3e-5a7b9d1f3b5d",
+    "account_id": "ACC-1011",
+    "posted_at": "2026-01-28T10:30:00Z",
+    "amount": 67.80,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "PENDING",
+    "counterparty": "\ufeffAcme\u200bCorp\u200c",
+    "description": "Cloud storage subscription"
+  },
+  {
+    "transaction_id": "7b9d1f3b-5d7f-9a1c-3e5a-7b9d1f3b5d7g",
+    "account_id": "ACC-1012",
+    "posted_at": "2026-01-29T09:00:00Z",
+    "amount": 88.10,
+    "currency": "GBP",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "Harbour Freight Logistics"
+  },
+  {
+    "transaction_id": "9d1f3b5d-7f9a-1c3e-5a7b-9d1f3b5d7f9a",
+    "account_id": "ACC-1013",
+    "posted_at": "2026-02-30T23:45:00Z",
+    "amount": 199.00,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Cobalt Analytics LLC"
+  },
+  {
+    "transaction_id": "1f3b5d7f-9a1c-3e5a-7b9d-1f3b5d7f9a1c",
+    "account_id": "ACC-1014",
+    "posted_at": "2026-03-01T09:00:00",
+    "amount": 42.00,
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "PENDING",
+    "counterparty": "Northwind Trading Co"
+  },
+  {
+    "transaction_id": "3b5d7f9a-1c3e-5a7b-9d1f-3b5d7f9a1c3e",
+    "account_id": "ACC-1015",
+    "posted_at": "2026-03-02T14:10:00Z",
+    "amount": 76.50,
+    "currency": "USDX",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Blue Yonder Airlines"
+  },
+  {
+    "transaction_id": "5d7f9a1c-3e5a-7b9d-1f3b-5d7f9a1c3e5a",
+    "account_id": "ACC-1016",
+    "posted_at": "2026-03-03T11:25:00Z",
+    "amount": -25.00,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Cobalt Analytics LLC"
+  },
+  {
+    "transaction_id": "7f9a1c3e-5a7b-9d1f-3b5d-7f9a1c3e5a7b",
+    "account_id": "ACC-1017",
+    "posted_at": "2026-03-04T08:55:00Z",
+    "amount": 0.00,
+    "currency": "GBP",
+    "transaction_type": "REFUND",
+    "status": "PENDING",
+    "counterparty": "Harbour Freight Logistics"
+  },
+  {
+    "transaction_id": "9a1c3e5a-7b9d-1f3b-5d7f-9a1c3e5a7b9d",
+    "account_id": "ACC-1018",
+    "posted_at": "2026-03-05T16:40:00Z",
+    "amount": 12.3456,
+    "currency": "EUR",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "Northwind Trading Co"
+  },
+  {
+    "transaction_id": "2c4e6a8b-0d2f-4a6c-8e0b-2d4f6a8b0d2f",
+    "account_id": "ACC-1019",
+    "posted_at": "2026-03-06T12:00:00Z",
+    "amount": "99999999999999.99",
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Cobalt Analytics LLC"
+  },
+  {
+    "transaction_id": "4e6a8b0d-2f4a-6c8e-0b2d-4f6a8b0d2f4a",
+    "account_id": "ACC-1020",
+    "posted_at": "2026-03-07T10:20:00Z",
+    "amount": 58.30,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Blue Yonder Airlines"
+  },
+  {
+    "transaction_id": "6a8b0d2f-4a6c-8e0b-2d4f-6a8b0d2f4a6c",
+    "account_id": "ACC-1021",
+    "posted_at": "2026-03-09T09:05:00Z",
+    "amount": 111.15,
+    "currency": "GBP",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Harbour Freight Logistics",
+    "description": "Quarterly service charge",
+    "internal_reference": "OPS-8891",
+    "risk_score": 42,
+    "source_system": "legacy-batch-loader"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c010",
+    "account_id": "ACC-2001",
+    "posted_at": "2026-04-01T09:30:00z",
+    "amount": "1024.25",
+    "currency": "usd",
+    "transaction_type": "credit",
+    "status": "posted",
+    "counterparty": "Orchid Books Ltd",
+    "description": null
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c011",
+    "account_id": "ACC-2002",
+    "posted_at": "2026-04-02T09:30:00Z",
+    "amount": 20.00,
+    "currency": "USD",
+    "transaction_type": "TRANSFER",
+    "status": "POSTED",
+    "counterparty": "Synthetic Counterparty"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c012",
+    "account_id": "ACC-2003",
+    "posted_at": "2026-04-03T09:30:00Z",
+    "amount": 21.00,
+    "currency": "USD",
+    "transaction_type": "CREDIT",
+    "status": "FAILED",
+    "counterparty": "Synthetic Counterparty"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c013",
+    "account_id": "ACC-2004",
+    "posted_at": "2026-04-04T09:30:00Z",
+    "amount": "1,234.56",
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Synthetic Counterparty"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c014",
+    "account_id": "acc-2005",
+    "posted_at": "2026-04-05T09:30:00Z",
+    "amount": 23.00,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Synthetic Counterparty"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c015",
+    "account_id": "ACC-2006",
+    "posted_at": "2026-04-06T09:30:00Z",
+    "amount": 24.00,
+    "currency": "USD",
+    "transaction_type": "CREDIT",
+    "status": "POSTED",
+    "counterparty": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c016",
+    "account_id": "ACC-2007",
+    "posted_at": "2026-04-07T09:30:00Z",
+    "amount": 25.00,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Synthetic Counterparty",
+    "description": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+  },
+  {
+    "transaction_id": "ea2e0c1a-0e5e-4b80-9db8-bceba343c017",
+    "account_id": "ACC-2008",
+    "posted_at": "2026-04-08T09:30:00Z",
+    "amount": null,
+    "currency": "USD",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Synthetic Counterparty"
+  }
+]

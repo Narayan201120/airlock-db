@@ -1,0 +1,22 @@
+# Python build and cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Migration outputs
+/output/
+/output-repair/
+/real-data-output/
+/migration-output/
+target_migration.db
+airlock_report.html
+airlock_errors.jsonl
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

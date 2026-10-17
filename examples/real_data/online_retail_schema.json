@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "model_name": "OnlineRetailLine",
+  "id_field": "source_row",
+  "strict": false,
+  "strip_whitespace": false,
+  "fields": {
+    "source_row": { "type": "integer", "strict": true },
+    "invoice_no": { "type": "string", "strict": true },
+    "stock_code": { "type": "string", "strict": true },
+    "description": { "type": "string", "required": false, "max_length": 500, "strict": true },
+    "quantity": { "type": "integer", "strict": true },
+    "invoice_date": { "type": "datetime", "strict": false },
+    "unit_price": { "type": "decimal", "strict": false },
+    "customer_id": { "type": "string", "required": false, "max_length": 32, "anonymize": true, "strict": true },
+    "country": { "type": "string", "strict": true }
+  }
+}

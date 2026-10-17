@@ -1,0 +1,7 @@
+{
+  "allowed_currencies": ["USD", "EUR", "GBP"],
+  "allowed_transaction_types": ["DEBIT", "CREDIT", "REFUND"],
+  "allowed_statuses": ["PENDING", "POSTED", "REVERSED"],
+  "min_amount": "0.01",
+  "max_amount": "250000.00"
+}
