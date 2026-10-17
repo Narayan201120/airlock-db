@@ -13,6 +13,7 @@ venv/
 /real-data-output/
 /migration-output/
 target_migration.db
+target_migration.jsonl
 airlock_report.html
 airlock_errors.jsonl
 
