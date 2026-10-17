@@ -159,6 +159,7 @@ jobs:
       - name: Checkpoint and resume
         run: |
           python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --commit-every 4 --output-dir ci-checkpoint || test $? -eq 1
-          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --commit-every 4 --resume --output-dir ci-checkpoint | grep -q 'Resumed: 32'
+          python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --commit-every 4 --resume --output-dir ci-checkpoint > ci-resume.log || test $? -eq 1
+          grep -q 'Resumed: 32' ci-resume.log
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-checkpoint \
             --expected-checked 32 --expected-valid 8 --expected-invalid 24 --expected-rows 8
