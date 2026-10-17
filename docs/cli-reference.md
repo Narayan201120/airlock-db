@@ -23,11 +23,12 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 
 ## Outputs
 
-The command writes `airlock_report.html` into the output directory, plus `target_migration.db` for the SQLite target and `target_migration.jsonl` for the JSONL target, depending on `--output-format`. `airlock_errors.jsonl` appears only when `--error-log` is requested.
+The command writes `airlock_report.html` and `airlock_summary.json` into the output directory, plus `target_migration.db` for the SQLite target and `target_migration.jsonl` for the JSONL target, depending on `--output-format`. `airlock_errors.jsonl` appears only when `--error-log` is requested.
 
 - Valid rows commit together in one SQLite transaction. A large transaction needs free disk space for the database and SQLite's rollback journal.
 - Amounts are stored as normalized fixed-point strings with two fractional digits, preserving their value without exponent notation.
 - Managed version 1 databases are upgraded in 1,000-row pages when opened. AirLock DB refuses to adopt an existing unversioned or incompatible `transactions` table.
+- `airlock_summary.json` is a machine-readable copy of the run: counts, drift categories, storage statistics, source labels, and the exit code. CI jobs and dashboards can read it without parsing the HTML. Anonymize mode redacts source labels.
 
 ### JSONL target output
 

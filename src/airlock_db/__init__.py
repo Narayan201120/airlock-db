@@ -1,5 +1,7 @@
 """AirLock DB schema and local-first migration utilities."""
 
+__version__ = "0.1.1"
+
 from .schemas import FinancialTransaction, TransactionStatus, TransactionType
 from .ingestion import InputRecord, SourceIssue, iter_source_records
 from .pipeline import (
@@ -12,6 +14,7 @@ from .pipeline import (
 from .schema_config import DynamicSchema, SchemaConfigError
 
 __all__ = [
+    "__version__",
     "DriftCategory",
     "DynamicSchema",
     "FinancialTransaction",

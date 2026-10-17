@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from . import __version__
 from .anonymize import RunAnonymizer
 from .constraints import ConstraintConfigError, ValidationConstraints
 from .dynamic_store import DynamicSQLiteTargetStore
@@ -29,6 +30,7 @@ from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
 from .schema_config import DynamicSchema, SchemaConfigError
 from .schemas import FinancialTransaction
 from .sqlite_store import SQLiteTargetStore
+from .summary import build_run_summary, write_run_summary
 
 
 logger = logging.getLogger("airlock_db")
@@ -142,7 +144,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="pseudonymize sensitive fields, redact diagnostics, and omit raw rejected values from an optional repair log",
     )
     parser.add_argument("--verbose", action="store_true", help="include informational log messages")
-    parser.add_argument("--version", action="version", version="airlock-db 0.1.0")
+    parser.add_argument("--version", action="version", version=f"airlock-db {__version__}")
     return parser
 
 
@@ -395,6 +397,7 @@ def run_migration(args: argparse.Namespace) -> int:
     database_path = output_directory / "target_migration.db"
     jsonl_path = output_directory / "target_migration.jsonl"
     report_path = output_directory / "airlock_report.html"
+    summary_path = output_directory / "airlock_summary.json"
     output_format = args.output_format
     use_sqlite = output_format in {"sqlite", "both"}
     use_jsonl = output_format in {"jsonl", "both"}
@@ -469,7 +472,7 @@ def run_migration(args: argparse.Namespace) -> int:
             if configured_log_path.is_absolute()
             else output_directory / configured_log_path
         )
-        reserved_paths = [database_path, report_path]
+        reserved_paths = [database_path, report_path, summary_path]
         if use_jsonl:
             reserved_paths.append(jsonl_path)
         if args.config:
@@ -800,18 +803,40 @@ def run_migration(args: argparse.Namespace) -> int:
         storage_summary["status"] = "failed"
         storage_summary["error"] = storage_error
 
+    source_labels = [
+        anonymizer.source_label(_source_display_label(source))
+        if anonymizer
+        else _source_display_label(source)
+        for source in sources
+    ]
+    has_validation_issues = bool(
+        metrics.invalid_records or metrics.file_errors or metrics.incomplete_files
+    )
+    unresolved_conflicts = bool(
+        args.conflict_policy == "skip"
+        and storage_summary.get("conflicting_transaction_ids", 0)
+    )
+    if interrupted:
+        exit_code = 130
+    elif repair_log is not None and repair_log_error is not None:
+        exit_code = 2
+    else:
+        exit_code = (
+            1
+            if has_validation_issues
+            or unresolved_conflicts
+            or storage_error is not None
+            or pipeline_failed
+            else 0
+        )
+
     try:
         write_html_report(
             report_path,
             metrics,
             error_rows=report_issues,
             storage=storage_summary,
-            sources=[
-                anonymizer.source_label(_source_display_label(source))
-                if anonymizer
-                else _source_display_label(source)
-                for source in sources
-            ],
+            sources=source_labels,
         )
     except (OSError, UnicodeError, ValueError) as exc:
         display_path = report_path.name if anonymizer else report_path
@@ -820,6 +845,38 @@ def run_migration(args: argparse.Namespace) -> int:
         return 2
     except KeyboardInterrupt:
         logger.warning("Migration interrupted while writing the report; any previous report was preserved")
+        return 130
+
+    try:
+        write_run_summary(
+            summary_path,
+            build_run_summary(
+                metrics,
+                storage=storage_summary,
+                sources=source_labels,
+                schema_name=(
+                    dynamic_schema.model_name
+                    if dynamic_schema
+                    else FinancialTransaction.__name__
+                ),
+                schema_fingerprint=(
+                    dynamic_schema.fingerprint
+                    if dynamic_schema
+                    else _BUILTIN_SCHEMA_FINGERPRINT
+                ),
+                output_format=output_format,
+                conflict_policy=args.conflict_policy,
+                anonymized=anonymizer is not None,
+                exit_code=exit_code,
+            ),
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        summary_display = summary_path.name if anonymizer else summary_path
+        details = type(exc).__name__ if anonymizer else str(exc)
+        print(f"airlock-db: could not write run summary {summary_display}: {details}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        logger.warning("Migration interrupted while writing the run summary; any previous summary was preserved")
         return 130
 
     print(f"Records checked: {metrics.records_seen}")
@@ -866,26 +923,7 @@ def run_migration(args: argparse.Namespace) -> int:
         storage_summary.get("duplicate_transaction_ids", 0),
     )
 
-    if interrupted:
-        return 130
-    if repair_log is not None and repair_log_error is not None:
-        return 2
-
-    has_validation_issues = bool(
-        metrics.invalid_records or metrics.file_errors or metrics.incomplete_files
-    )
-    unresolved_conflicts = bool(
-        args.conflict_policy == "skip"
-        and storage_summary.get("conflicting_transaction_ids", 0)
-    )
-    return (
-        1
-        if has_validation_issues
-        or unresolved_conflicts
-        or storage_error is not None
-        or pipeline_failed
-        else 0
-    )
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:

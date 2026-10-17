@@ -15,6 +15,7 @@ venv/
 target_migration.db
 target_migration.jsonl
 airlock_report.html
+airlock_summary.json
 airlock_errors.jsonl
 
 # Tooling caches

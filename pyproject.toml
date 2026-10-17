@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airlock-db"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local-first database migration and schema validation tool"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2.6,<3", "PyYAML>=6,<7"]
@@ -12,6 +12,9 @@ dependencies = ["pydantic>=2.6,<3", "PyYAML>=6,<7"]
 [project.scripts]
 airlock-db = "airlock_db.cli:main"
 schema-sentry = "airlock_db.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "airlock_db.__version__"}
 
 [tool.setuptools]
 package-dir = {"" = "src"}

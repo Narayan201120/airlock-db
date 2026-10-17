@@ -44,7 +44,7 @@ The public-data path is documented in [features/dynamic-schema.md](features/dyna
 
 ## Evidence
 
-Keep `target_migration.db`, `airlock_report.html`, and `verification.json` in the run directory. The helper checks the SQLite integrity, row count, report chart, and absence of scripts or external assets. When asked to verify anonymization, pass `--anonymized-field` once per field. The helper checks the token prefix and length used by the built-in or dynamic schema. Add `--expect-type-mismatch-note` when the run includes a type mismatch; the helper then requires the no-conversion note in the report. For JSONL-only runs, add `--skip-sqlite` and `--expected-jsonl-rows N`; the helper then parses every JSONL line instead of opening a database.
+Keep `target_migration.db`, `airlock_report.html`, and `verification.json` in the run directory. The helper checks the SQLite integrity, row count, report chart, and absence of scripts or external assets. When asked to verify anonymization, pass `--anonymized-field` once per field. The helper checks the token prefix and length used by the built-in or dynamic schema. Add `--expect-type-mismatch-note` when the run includes a type mismatch; the helper then requires the no-conversion note in the report. For JSONL-only runs, add `--skip-sqlite` and `--expected-jsonl-rows N`; the helper then parses every JSONL line instead of opening a database. The helper also requires `airlock_summary.json` and checks its counts against the report. Pass `--allow-missing-summary` only for artifacts from older versions.
 
 The command must exercise the real CLI. Do not replace it with direct calls to internal pipeline functions. A passing import or compile check is not enough.
 

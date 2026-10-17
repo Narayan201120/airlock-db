@@ -162,6 +162,38 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
     if token_violations and any(token_violations.values()):
         raise ValueError("found malformed anonymized values: " + json.dumps(token_violations))
 
+    summary_path = args.output_dir / "airlock_summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"unreadable run summary: {exc}") from exc
+        if summary.get("format") != "airlock-db-run-summary":
+            raise ValueError("run summary has an unexpected format field")
+        records = summary.get("records", {})
+        summary_counts = (
+            records.get("checked"),
+            records.get("valid"),
+            records.get("invalid"),
+        )
+        report_counts = (
+            observed["records_checked"],
+            observed["valid_records"],
+            observed["invalid_records"],
+        )
+        if summary_counts != report_counts:
+            raise ValueError(
+                "run summary counts do not match the report: "
+                f"summary={summary_counts} report={report_counts}"
+            )
+        if jsonl_rows is not None and summary.get("storage", {}).get("jsonl_rows") != jsonl_rows:
+            raise ValueError("run summary JSONL row count does not match the file")
+        observed["summary_verified"] = True
+    elif args.allow_missing_summary:
+        observed["summary_verified"] = False
+    else:
+        raise ValueError("output directory is missing airlock_summary.json")
+
     return {"status": "passed", **observed}
 
 
@@ -178,6 +210,7 @@ def main() -> int:
     parser.add_argument("--expect-type-mismatch-note", action="store_true")
     parser.add_argument("--skip-sqlite", action="store_true")
     parser.add_argument("--expected-jsonl-rows", type=int)
+    parser.add_argument("--allow-missing-summary", action="store_true")
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
     if not args.skip_sqlite and args.expected_rows is None:

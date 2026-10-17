@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.1.0 released. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, repair resume, XML equivalence, source-database ingestion) on every push.
+Current state: v0.1.1 released. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, repair resume, XML equivalence, source-database ingestion) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
 
 ## Ground rules
 
@@ -9,7 +9,7 @@ Current state: v0.1.0 released. The GitHub Actions workflow runs the full end-to
 - The report stays a single self-contained file with no scripts or external assets.
 - No network behavior, no telemetry.
 
-## Tier 1: cheap infrastructure, immediate payoff
+## Tier 1: shipped in v0.1.1
 
 ### 1. Windows CI job
 
