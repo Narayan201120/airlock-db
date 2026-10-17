@@ -35,6 +35,7 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
     row_count: int | None = None
     token_violations: dict[str, int] | None = None
     integrity: str | None = None
+    posted_at_index: bool | None = None
     if not args.skip_sqlite:
         database = args.output_dir / "target_migration.db"
         if not database.is_file():
@@ -58,6 +59,18 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
             row_count = db.execute(
                 f"SELECT COUNT(*) FROM {_identifier(table)}"
             ).fetchone()[0]
+            if table == "transactions":
+                posted_at_index = (
+                    db.execute(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' "
+                        "AND name = 'idx_transactions_posted_at'"
+                    ).fetchone()[0]
+                    == 1
+                )
+                if not posted_at_index:
+                    raise ValueError(
+                        "committed transactions table is missing its posted-at index"
+                    )
             columns = {
                 row[1]
                 for row in db.execute(f"PRAGMA table_info({_identifier(table)})")
@@ -140,6 +153,7 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         "invalid_records": chart_invalid,
         "sqlite_rows": row_count,
         "sqlite_integrity": integrity,
+        "posted_at_index": posted_at_index,
         "jsonl_rows": jsonl_rows,
         "report_standalone": True,
         "type_mismatch_note_present": type_mismatch_note_present,

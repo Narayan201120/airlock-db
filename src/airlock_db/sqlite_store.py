@@ -371,6 +371,7 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
         self._committed = False
         self._repair_progress_ready = False
         self._migration_progress_ready = False
+        self._index_pending = False
 
     def __enter__(self) -> SQLiteTargetStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -414,7 +415,9 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
                 "SELECT type, sql FROM sqlite_master WHERE name = 'idx_transactions_posted_at'"
             ).fetchone()
             if index is None:
-                connection.execute(_CREATE_POSTED_AT_INDEX)
+                # Build the posted-at index after the load so bulk inserts do
+                # not pay per-row index maintenance.
+                self._index_pending = True
             elif index[0] != "index" or not index[1] or _normalized_sql(index[1]) != _normalized_sql(_CREATE_POSTED_AT_INDEX):
                 raise RuntimeError("The target posted-at index does not match the managed schema.")
 
@@ -590,6 +593,10 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
             raise RuntimeError("SQLite target store cannot be committed")
         self._flush()
         self._connection.commit()
+        if self._index_pending:
+            self._connection.execute(_CREATE_POSTED_AT_INDEX)
+            self._connection.commit()
+            self._index_pending = False
         self._committed = True
         return SQLiteWriteSummary(
             self._inserted, self._duplicates, self._updated, self._conflicts
