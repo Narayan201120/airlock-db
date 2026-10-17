@@ -1,0 +1,77 @@
+# Roadmap
+
+Current state: v0.1.0 released. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, repair resume, XML equivalence, source-database ingestion) on every push.
+
+## Ground rules
+
+- Stay local-first. No new runtime dependencies. Stdlib or already-present packages only.
+- Every feature lands with an end-to-end check wired into CI before its commit.
+- The report stays a single self-contained file with no scripts or external assets.
+- No network behavior, no telemetry.
+
+## Tier 1: cheap infrastructure, immediate payoff
+
+### 1. Windows CI job
+
+- What: run the verify workflow on `windows-latest` beside `ubuntu-latest`, using Git Bash as the shell on both.
+- Why: the XML equivalence script already hit a Windows-only file-lock bug. Paths, URIs, and locking differ enough to deserve a gate.
+- Verification: both jobs green on one push.
+
+### 2. Release artifacts
+
+- What: a workflow that builds the sdist and wheel on every `v*` tag and attaches them to the GitHub release.
+- Why: air-gapped installs need a downloadable wheel without PyPI. The release page becomes the wheelhouse source.
+- Scope: `python -m build`, then `gh release upload`. Needs `build` in the workflow only.
+- Verification: cut v0.1.1 with a docs change, download the wheel from the release, install it in a clean venv with `--no-index`, run one migration.
+
+### 3. Machine-readable run summary
+
+- What: write `airlock_summary.json` next to the report. Counts, drift categories, storage stats, exit-relevant flags, and source labels. Anonymize mode redacts labels.
+- Why: CI and dashboards can consume it without scraping HTML. It also becomes the input for item 4.
+- Verification: the output verifier checks that summary counts match the report and database.
+
+## Tier 2: core features
+
+### 4. Report regeneration
+
+- What: `airlock-db report --output-dir DIR` rebuilds `airlock_report.html` from `airlock_summary.json` plus the repair checkpoints, adding a repair-outcomes section.
+- Why: the report freezes at migration time while repair moves the database ahead. Today there is no way to see the final state in one page.
+- Depends on: item 3.
+- Verification: end to end in CI. Migrate, repair, regenerate, checks pass over both runs.
+
+### 5. Non-interactive repair
+
+- What: `repair --decisions decisions.jsonl` applies scripted decisions (`set field`, `remove`, `drop`, `edit`) with the same validation, staging, and checkpoints as the interactive session.
+- Why: air-gapped operations often need an auditable, repeatable batch fix rather than a live session.
+- Scope: validate the decisions file up front, refuse unknown entries, keep the decision fingerprints and resume behavior identical.
+- Verification: CI drives a decisions file, then resumes with `q` and asserts the resumed counts.
+
+### 6. Multi-table source databases
+
+- What: make `--source-table` repeatable so one `--source-db` run can validate several tables with the same schema.
+- Why: legacy databases hold related tables; the one-table limit forces exports.
+- Verification: CI builds a two-table database, migrates both, and checks per-table counts in the report.
+
+## Tier 3: bigger bets, decide per use case
+
+### 7. CSV and TSV ingestion
+
+- `--input file.csv` with delimiter options, BOM and encoding handling, and header-to-schema validation. Stdlib `csv` only.
+
+### 8. Resumable large migrations
+
+- An opt-in checkpoint mode that commits in batches and records progress, trading single-transaction atomicity for restartability on very large sources.
+
+### 9. Report UX without scripts
+
+- Per-source breakdown table and issue-category grouping using `<details>` only. No JavaScript, by design.
+
+## Explicitly out of scope
+
+- XLSX ingestion. The dependency cost is too high; the preparation-script pattern covers it.
+- A unit-test suite. The project rule is end-to-end verification, and CI already runs it.
+- Any cloud, sync, or telemetry feature.
+
+## Sequencing
+
+Items 1 and 2 are small and pay off immediately. Item 3 unlocks item 4, which closes the repair-versus-report gap. Items 5 and 6 deepen the two operational stories: repair and legacy databases. Tier 3 items start only when a concrete use case arrives.

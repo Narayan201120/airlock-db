@@ -140,6 +140,7 @@ python scripts/benchmark_migration.py --rows 100000 --runs 3 --batch-size 500
 
 - [CLI reference](docs/cli-reference.md): every option, output file, size limit, conflict rule, anonymization detail, and the constraints and dynamic-schema formats.
 - [Repair workflow](docs/repair.md): the session keys, staging, resume behavior, and privacy rules.
+- [Roadmap](docs/roadmap.md): planned upgrades and how each one is verified.
 - [Real-data examples](examples/real_data/README.md): public datasets, attribution, and conversion notes.
 - [Verification skill](.cursor/skills/verify-airlock-db/SKILL.md): the end-to-end checks for this repo and a reusable [output verifier](.cursor/skills/verify-airlock-db/scripts/verify_migration_output.py).
 
