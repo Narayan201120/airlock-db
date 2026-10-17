@@ -80,6 +80,9 @@ jobs:
       - name: Archive input
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_archive_input.py ci-archives
+      - name: Schema inference
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_schema_infer.py ci-infer
       - name: Multi-table source database
         run: |
           python - <<'PY'

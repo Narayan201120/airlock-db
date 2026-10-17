@@ -155,6 +155,21 @@ A layout has `version: 1`, a Python-style `model_name`, an `id_field`, and a `fi
 
 Unknown field options and invalid combinations fail before input processing.
 
+### Drafting a layout from data
+
+`airlock-db infer` writes a starter layout from the records themselves:
+
+```powershell
+python main.py infer --input legacy/tickets.json --output schema_draft.yaml
+python main.py --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
+```
+
+The draft reads the input with the normal readers, including directories, compressed files, and CSV, then classifies each field from the values it sees. Types stay conservative: numeric text keeps its exact spelling as `decimal`, ISO text becomes `date` or `datetime`, and mixed text formats fall back to `string`, which accepts every observed value. A field is `required` only when it is present and non-null in every scanned record.
+
+Conflicts are marked, not hidden. When no safe type fits the observed values, the draft uses the most common kind, prints the field under `Conflicts`, and the first migration reports the minority rows as invalid. YAML drafts carry these notes as comments. Review the draft before trusting it; `infer` never writes lengths, patterns, or enum lists.
+
+Options: `--output` picks the draft path and format (`.yaml`, `.yml`, or `.json`, default `schema_draft.yaml`), `--model-name` renames the model, `--id-field` overrides the detected identity field, `--limit` bounds the scan (default 10,000 records, `0` scans everything), and `--overwrite` replaces an existing file. An identity field is detected from names such as `id`, `uuid`, or `*_id`, preferring values that look like UUIDs; otherwise the first field with no nulls is used.
+
 ### Storage
 
 Every dynamic layout must identify a required `id_field`. It becomes the SQLite primary key and uses the selected `--conflict-policy`. Dynamic records retain all configured fields in a managed table named `dynamic_records_<schema fingerprint>` inside `target_migration.db`. Different layouts use separate tables. Decimal values are stored as text to avoid floating-point changes. The built-in layout continues to use the existing `transactions` table when `--config` is omitted.

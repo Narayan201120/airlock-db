@@ -68,18 +68,18 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 
 ## Tier 4: in progress (target v0.3.0)
 
-### 10. Compressed inputs
+### 10. Compressed inputs (shipped)
 
 - What: read `.gz` files and `.zip` archives directly, streaming members through the same bounded readers. No extraction to disk and no nesting: one `.gz` layer over a supported suffix, or a flat zip of supported members.
 - Why: air-gapped handoffs arrive as archives. Extracting them first writes unvalidated PII to disk.
 - Scope: the same suffix list and size limits apply to the uncompressed content. Unsupported members are skipped, and a bad archive is a source error, not a crash.
 - Verification: `scripts/verify_archive_input.py` builds gzip and zip twins of a checked fixture, migrates them, and requires stored rows and counts identical to the plain-file run. Wired into CI.
 
-### 11. Schema inference command
+### 11. Schema inference command (shipped)
 
 - What: `airlock-db infer --input FILE` writes a draft dynamic-schema config from observed records. Inferred types are conservative, and the draft marks fields whose values conflict.
 - Why: writing a client schema by hand is the slowest step for a new legacy layout.
-- Verification: infer a draft from the messy fixture, migrate with that draft, and require zero drift for the fields the draft claims.
+- Verification: `scripts/verify_schema_infer.py` drafts a layout from the real-data sample and the messy fixture, migrates each source with its own draft, and requires the predicted outcome: zero invalid records for the clean sample, and failures only on the rows the draft flagged. Wired into CI.
 
 ### 12. Verification command
 

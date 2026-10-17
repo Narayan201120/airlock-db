@@ -9,6 +9,7 @@ It makes no network requests. The report embeds its CSS and SVG, so it opens on 
 - Streams input one record at a time, so memory stays bounded as files grow.
 - Reads JSON, JSONL, NDJSON, XML, CSV, and TSV files, plain or compressed (`.gz`, `.zip`), or rows from a local SQLite database.
 - Validates against the built-in financial-transaction model, or any client layout defined in a JSON or YAML config.
+- Drafts a starter layout from the files themselves with `airlock-db infer`, with conflicts marked for review.
 - Never crashes on a bad row. Rejected rows are reported with per-field reasons and the run continues.
 - Reports schema drift: missing fields, undocumented extras, type mismatches, and new enum values.
 - Writes accepted records to SQLite, a JSONL migration file, or both, with `skip` or `replace` conflict handling for SQLite.
@@ -115,6 +116,15 @@ Replace the built-in model with a JSON or YAML layout. The bundled example is a 
 
 ```powershell
 python main.py --input legacy/tickets.json --config examples/schema_config.json --output-dir ticket-output
+```
+
+### Draft a schema from your data
+
+Do not write the first layout from scratch. `infer` reads the source with the normal readers and drafts a config from what is actually in the files, with conservative types and the fields that need review marked in the output.
+
+```powershell
+python main.py infer --input legacy/tickets.json --output schema_draft.yaml
+python main.py --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
 
 ### Run with pseudonymized fields

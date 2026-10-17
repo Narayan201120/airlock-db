@@ -59,3 +59,5 @@ There is no long-running process to stop. Keep successful output directories as 
 `scripts/verify_xml_equivalence.py INPUT [--constraints PATH | --config PATH]` migrates the same accepted records through the JSON and XML paths in temporary directories and compares every stored column. Run it whenever the XML reader changes.
 
 `scripts/verify_archive_input.py [WORKDIR]` builds gzip and zip twins of a JSONL fixture and requires stored rows and counts identical to the plain run. Run it whenever input discovery or a reader changes.
+
+`scripts/verify_schema_infer.py [WORKDIR]` drafts a layout from the example fixtures with `airlock-db infer`, then migrates each source with its own draft. The clean sample must pass with zero invalid records; the messy fixture must fail on exactly the rows its flagged conflicts predict. Run it whenever inference, the readers, or the dynamic schema change.

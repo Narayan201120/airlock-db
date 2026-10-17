@@ -64,6 +64,23 @@ class SchemaConfigError(ValueError):
     """Raised when an external schema layout is invalid or unreadable."""
 
 
+def valid_model_name(name: object) -> bool:
+    """Return True when ``name`` can become a dynamic model class name."""
+
+    return isinstance(name, str) and _MODEL_NAME.fullmatch(name) is not None
+
+
+def valid_field_name(name: object) -> bool:
+    """Return True when ``name`` can become a dynamic schema field."""
+
+    return (
+        isinstance(name, str)
+        and _FIELD_NAME.fullmatch(name) is not None
+        and not keyword.iskeyword(name)
+        and name.casefold() not in _RESERVED_FIELD_NAMES
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DynamicField:
     """Validated field metadata used to compile and persist one model field."""
@@ -255,7 +272,7 @@ def _compile_schema(raw: Any) -> DynamicSchema:
         raise SchemaConfigError("schema config version must be the integer 1")
 
     model_name = raw.get("model_name")
-    if not isinstance(model_name, str) or _MODEL_NAME.fullmatch(model_name) is None:
+    if not valid_model_name(model_name):
         raise SchemaConfigError("model_name must be a simple Python class name")
     strict = _require_bool(raw.get("strict", False), "strict")
     strip_whitespace = _require_bool(
@@ -273,12 +290,7 @@ def _compile_schema(raw: Any) -> DynamicSchema:
     normalized_fields: dict[str, dict[str, Any]] = {}
     seen_names: set[str] = set()
     for name, spec in raw_fields.items():
-        if (
-            not isinstance(name, str)
-            or _FIELD_NAME.fullmatch(name) is None
-            or keyword.iskeyword(name)
-            or name.casefold() in _RESERVED_FIELD_NAMES
-        ):
+        if not valid_field_name(name):
             raise SchemaConfigError(f"invalid or reserved schema field name: {name!r}")
         folded_name = name.casefold()
         if folded_name in seen_names:

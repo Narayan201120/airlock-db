@@ -56,9 +56,10 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="airlock-db",
         description="Validate local JSON, JSONL, NDJSON, XML, CSV, or TSV records and migrate valid records to SQLite.",
         epilog=(
-            "Use `airlock-db repair --error-log PATH` to review rejected records "
-            "interactively, and `airlock-db report --output-dir DIR` to rebuild a "
-            "report after repair."
+            "Use `airlock-db infer --input PATH` to draft a dynamic schema from "
+            "legacy data, `airlock-db repair --error-log PATH` to review rejected "
+            "records interactively, and `airlock-db report --output-dir DIR` to "
+            "rebuild a report after repair."
         ),
     )
     parser.add_argument(
@@ -1118,6 +1119,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             format="%(levelname)s: %(message)s",
         )
         return repair_main(arguments[1:])
+    if arguments and arguments[0] == "infer":
+        from .schema_infer import infer_main
+
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(levelname)s: %(message)s",
+        )
+        return infer_main(arguments[1:])
     if arguments and arguments[0] == "report":
         from .report_refresh import refresh_main
 
