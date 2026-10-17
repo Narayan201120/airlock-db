@@ -2,8 +2,10 @@
 
 Covers the paths the standard fixtures miss: LF/CRLF/bare-CR line endings,
 blank lines, records split across chunk boundaries, oversized records,
-invalid UTF-8, duplicate JSON keys, and CSV rows with empty, short, or extra
-values. Run from any directory; pass a scratch directory for generated files.
+invalid UTF-8, duplicate JSON keys, CSV rows with empty, short, or extra
+values, and value normalization (trimming, uppercase, blank rejection) down
+to the stored row. Run from any directory; pass a scratch directory for
+generated files.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import argparse
 import io
 import json
 import logging
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -239,6 +242,88 @@ def check_csv_edges(work: Path) -> int:
     return len(rows)
 
 
+NORMALIZATION_ROWS = [
+    {
+        "transaction_id": " 253d38ef-bda7-4785-94c5-b350680adeec ",
+        "account_id": " ACC-0001 ",
+        "posted_at": " 2026-01-05T08:00:00Z ",
+        "amount": " 12.34 ",
+        "currency": " eur ",
+        "transaction_type": " debit ",
+        "status": " posted ",
+        "counterparty": " Alice ",
+        "description": "  hello  ",
+    },
+    {
+        "transaction_id": "b6f0c1b0-2b3e-4c8a-9d1f-1a2b3c4d5e6f",
+        "account_id": "ACC-0002",
+        "posted_at": "2026-01-05T09:00:00Z",
+        "amount": "1.00",
+        "currency": "USD",
+        "transaction_type": "DEBIT",
+        "status": "POSTED",
+        "counterparty": "   ",
+        "description": None,
+    },
+]
+
+EXPECTED_STORED_ROW = {
+    "transaction_id": "253d38ef-bda7-4785-94c5-b350680adeec",
+    "account_id": "ACC-0001",
+    "posted_at": "2026-01-05T08:00:00+00:00",
+    "amount": "12.34",
+    "currency": "EUR",
+    "transaction_type": "DEBIT",
+    "status": "POSTED",
+    "counterparty": "Alice",
+    "description": "hello",
+}
+
+
+def check_normalization(work: Path) -> int:
+    """Padded values must trim, uppercase, and store clean; blanks must fail."""
+
+    source = work / "padded_values.jsonl"
+    source.write_text(
+        "\n".join(json.dumps(row) for row in NORMALIZATION_ROWS) + "\n",
+        encoding="utf-8",
+    )
+    cli_out = work / "normalization_out"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "main.py",
+            "--input",
+            str(source),
+            "--output-dir",
+            str(cli_out),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 1:
+        _fail("normalization exit code", 1, completed.returncode)
+    summary = json.loads((cli_out / "airlock_summary.json").read_text(encoding="utf-8"))
+    counts = (summary["records"]["valid"], summary["records"]["invalid"])
+    if counts != (1, 1):
+        _fail("normalization counts", (1, 1), counts)
+    database = cli_out / "target_migration.db"
+    connection = sqlite3.connect(f"file:{database.resolve().as_posix()}?mode=ro", uri=True)
+    try:
+        cursor = connection.execute(
+            "SELECT transaction_id, account_id, posted_at, amount, currency, "
+            "transaction_type, status, counterparty, description FROM transactions"
+        )
+        columns = [description[0] for description in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        connection.close()
+    if rows != [EXPECTED_STORED_ROW]:
+        _fail("stored normalization row", [EXPECTED_STORED_ROW], rows)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("work_dir", type=Path, help="scratch directory for outputs")
@@ -249,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     checks = check_splitter()
     checks += check_messy_file(args.work_dir)
     checks += check_csv_edges(args.work_dir)
+    checks += check_normalization(args.work_dir)
     print(f"jsonl_csv_reader_ok checks={checks}")
     return 0
 

@@ -135,9 +135,10 @@ class ValidationMetrics:
 
     def observe(self, result: MigrationRecordResult) -> None:
         if result.record_number is not None:
-            counts = self.source_counts.setdefault(
-                result.source, {"records": 0, "valid": 0, "invalid": 0}
-            )
+            counts = self.source_counts.get(result.source)
+            if counts is None:
+                counts = {"records": 0, "valid": 0, "invalid": 0}
+                self.source_counts[result.source] = counts
             counts["records"] += 1
             if result.is_valid:
                 counts["valid"] += 1

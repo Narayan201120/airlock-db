@@ -23,7 +23,6 @@ _ISO_DATETIME_PATTERN = re.compile(
     r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
     r"(?:\.\d{3}|\.\d{6})?(?:[Zz]|[+-]\d{2}:\d{2})\Z"
 )
-_ASCII_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class TransactionType(str, Enum):
@@ -92,7 +91,9 @@ def _clean_text(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     if value.isascii():
-        if _ASCII_CONTROL_PATTERN.search(value) is not None:
+        # For ASCII, non-printable means exactly the control code points that
+        # the previous regular-expression scan rejected.
+        if not value.isprintable():
             raise ValueError("must not contain control, format, or surrogate characters")
     elif any(category(char) in {"Cc", "Cf", "Cs"} for char in value):
         raise ValueError("must not contain control, format, or surrogate characters")
@@ -109,7 +110,8 @@ class FinancialTransaction(BaseModel):
 
     model_config = ConfigDict(
         extra="forbid",
-        str_strip_whitespace=True,
+        # Every string field trims through ``_clean_text`` in its before
+        # validator, so the core-level strip would only repeat that work.
         validate_assignment=True,
     )
 
