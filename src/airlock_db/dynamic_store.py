@@ -252,7 +252,8 @@ class DynamicSQLiteTargetStore(_MigrationCheckpointMixin):
             first = first_rows.setdefault(key, row)
             if first != row:
                 batch_conflicts.add(key)
-            last_rows[key] = row
+            if self.conflict_policy == "replace":
+                last_rows[key] = row
 
         keys = tuple(first_rows)
         existing = self._existing_rows(keys)

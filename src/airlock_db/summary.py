@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from ._version import __version__
 from .pipeline import ValidationMetrics
 
 SUMMARY_FORMAT = "airlock-db-run-summary"

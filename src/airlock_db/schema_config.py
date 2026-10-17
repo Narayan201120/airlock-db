@@ -15,10 +15,7 @@ from pathlib import Path
 from typing import Any, Literal, Union
 from uuid import UUID
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, create_model
-from yaml.events import AliasEvent
-from yaml.nodes import MappingNode
 
 
 _MAX_CONFIG_BYTES = 1024 * 1024
@@ -129,12 +126,12 @@ class DynamicSchema:
                     parse_constant=_reject_json_constant,
                 )
             elif suffix in {".yaml", ".yml"}:
-                raw = yaml.load(text, Loader=_UniqueKeySafeLoader)
+                raw = _load_unique_key_yaml(text, str(source))
             else:
                 raise SchemaConfigError("schema config file must end in .json, .yaml, or .yml")
         except SchemaConfigError:
             raise
-        except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise SchemaConfigError(f"invalid schema config {source}: {exc}") from exc
 
         try:
@@ -158,32 +155,49 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    """Safe YAML loader that rejects ambiguous keys and aliases."""
+def _load_unique_key_yaml(text: str, label: str) -> Any:
+    """Parse YAML with the safe loader, rejecting aliases and duplicate keys.
 
-    def compose_node(self, parent: Any, index: Any) -> Any:
-        if self.check_event(AliasEvent):
-            raise SchemaConfigError("YAML aliases are not supported in schema configs")
-        return super().compose_node(parent, index)
+    PyYAML is imported here so a plain JSON run never pays its import cost.
+    """
 
-    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[str, Any]:
-        if not isinstance(node, MappingNode):
-            raise SchemaConfigError("schema config mappings must use string keys")
-        result: dict[str, Any] = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            if not isinstance(key, str):
-                raise SchemaConfigError("schema config mapping keys must be strings")
-            if key in result:
-                raise SchemaConfigError(f"duplicate schema config key: {key}")
-            result[key] = self.construct_object(value_node, deep=deep)
-        return result
+    import yaml
+    from yaml.events import AliasEvent
+    from yaml.nodes import MappingNode
 
+    class _UniqueKeySafeLoader(yaml.SafeLoader):
+        """Safe YAML loader that rejects ambiguous keys and aliases."""
 
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _UniqueKeySafeLoader.construct_mapping,
-)
+        def compose_node(self, parent: Any, index: Any) -> Any:
+            if self.check_event(AliasEvent):
+                raise SchemaConfigError(
+                    "YAML aliases are not supported in schema configs"
+                )
+            return super().compose_node(parent, index)
+
+        def construct_mapping(
+            self, node: MappingNode, deep: bool = False
+        ) -> dict[str, Any]:
+            if not isinstance(node, MappingNode):
+                raise SchemaConfigError("schema config mappings must use string keys")
+            result: dict[str, Any] = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, str):
+                    raise SchemaConfigError("schema config mapping keys must be strings")
+                if key in result:
+                    raise SchemaConfigError(f"duplicate schema config key: {key}")
+                result[key] = self.construct_object(value_node, deep=deep)
+            return result
+
+    _UniqueKeySafeLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        _UniqueKeySafeLoader.construct_mapping,
+    )
+    try:
+        return yaml.load(text, Loader=_UniqueKeySafeLoader)
+    except yaml.YAMLError as exc:
+        raise SchemaConfigError(f"invalid YAML schema config {label}: {exc}") from exc
 
 
 def _require_bool(value: Any, label: str) -> bool:

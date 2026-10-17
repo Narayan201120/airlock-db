@@ -12,27 +12,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from . import __version__
-from .anonymize import RunAnonymizer
-from .constraints import ConstraintConfigError, ValidationConstraints
-from .dynamic_store import DynamicSQLiteTargetStore
-from .ingestion import DatabaseSource
-from .jsonl_target import JsonlTargetWriter
-from .pipeline import (
-    DriftCategory,
-    MigrationRecordResult,
-    ValidationIssue,
-    ValidationMetrics,
-    iter_validated_records,
-)
-from .report import write_html_report
-from .report_refresh import refresh_main
-from .repair import repair_main
-from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
-from .schema_config import DynamicSchema, SchemaConfigError
-from .schemas import FinancialTransaction
-from .sqlite_store import SQLiteTargetStore, read_migration_progress
-from .summary import build_run_summary, write_run_summary
+from ._version import __version__
+
+# The remaining imports stay inside the functions that need them so a plain
+# `--version` or `--help` call does not pay for Pydantic, PyYAML, or the
+# store layer. Python caches modules, so repeat calls are free.
 
 
 logger = logging.getLogger("airlock_db")
@@ -260,6 +244,8 @@ def _issue_rows(
     anonymizer: RunAnonymizer | None = None,
     schema_fields: frozenset[str] = _REPORT_SCHEMA_FIELDS,
 ) -> list[dict[str, object]]:
+    from .pipeline import DriftCategory
+
     def bounded_text(value: object, maximum: int = _MAX_REPORT_TEXT_CHARS) -> str:
         rendered = str(value)
         if len(rendered) > maximum:
@@ -337,6 +323,8 @@ def _log_storage_error(
 
 
 def _pipeline_failure(source: str, error: Exception) -> MigrationRecordResult:
+    from .pipeline import DriftCategory, MigrationRecordResult, ValidationIssue
+
     return MigrationRecordResult(
         source=source,
         record_number=None,
@@ -352,6 +340,8 @@ def _pipeline_failure(source: str, error: Exception) -> MigrationRecordResult:
 
 
 def _interruption_result() -> MigrationRecordResult:
+    from .pipeline import DriftCategory, MigrationRecordResult, ValidationIssue
+
     return MigrationRecordResult(
         source="<input pipeline>",
         record_number=None,
@@ -417,6 +407,8 @@ def _is_repair_log_file(path: Path) -> bool:
 
 
 def _source_display_label(source: Path | DatabaseSource) -> str:
+    from .ingestion import DatabaseSource
+
     if isinstance(source, DatabaseSource):
         if source.tables:
             return f"{source.path} ({', '.join(source.tables)})"
@@ -425,6 +417,19 @@ def _source_display_label(source: Path | DatabaseSource) -> str:
 
 
 def run_migration(args: argparse.Namespace) -> int:
+    from .anonymize import RunAnonymizer
+    from .constraints import ConstraintConfigError, ValidationConstraints
+    from .dynamic_store import DynamicSQLiteTargetStore
+    from .ingestion import DatabaseSource
+    from .jsonl_target import JsonlTargetWriter
+    from .pipeline import DriftCategory, ValidationMetrics, iter_validated_records
+    from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
+    from .report import write_html_report
+    from .schema_config import DynamicSchema, SchemaConfigError
+    from .schemas import FinancialTransaction
+    from .sqlite_store import SQLiteTargetStore, read_migration_progress
+    from .summary import build_run_summary, write_run_summary
+
     inputs = [Path(value) for value in (args.input or [])]
     source_tables = tuple(getattr(args, "source_table", None) or ())
     database_sources = [
@@ -1106,12 +1111,16 @@ def run_migration(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] == "repair":
+        from .repair import repair_main
+
         logging.basicConfig(
             level=logging.WARNING,
             format="%(levelname)s: %(message)s",
         )
         return repair_main(arguments[1:])
     if arguments and arguments[0] == "report":
+        from .report_refresh import refresh_main
+
         logging.basicConfig(
             level=logging.WARNING,
             format="%(levelname)s: %(message)s",

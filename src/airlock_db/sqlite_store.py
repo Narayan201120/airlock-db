@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import sqlite3
-import sys
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -126,11 +125,20 @@ def _canonical_amount(amount: Decimal) -> str:
 
 
 def _estimate_row_size(row: tuple[Any, ...]) -> int:
-    """Conservatively cap batch payload bytes, including tuple and string sizes."""
+    """Approximate batch payload bytes to decide when to flush early.
 
-    size = sys.getsizeof(row)
+    Strings dominate real rows. Exact object sizes are unnecessary because
+    this value only drives the pending-batch memory cap.
+    """
+
+    size = 64
     for value in row:
-        size += sys.getsizeof(value)
+        if type(value) is str:
+            size += len(value) + 49
+        elif value is None:
+            size += 16
+        else:
+            size += 64
     return size
 
 
@@ -516,13 +524,19 @@ class SQLiteTargetStore(_MigrationCheckpointMixin):
         existing = self._existing_rows(tuple(unique_rows))
         inserted_ids = set(unique_rows) - existing.keys()
         self._duplicates += submitted - len(inserted_ids)
-        first_rows: dict[str, tuple[Any, ...]] = {}
-        batch_conflicts: set[str] = set()
-        for row in self._batch:
-            transaction_id = str(row[0])
-            first_row = first_rows.setdefault(transaction_id, row)
-            if tuple(first_row[1:]) != tuple(row[1:]):
-                batch_conflicts.add(transaction_id)
+        if len(unique_rows) == submitted:
+            # Every ID is unique inside this batch, so intra-batch value
+            # conflicts are impossible. Alias the map instead of rebuilding it.
+            first_rows: dict[str, tuple[Any, ...]] = unique_rows
+            batch_conflicts: set[str] = set()
+        else:
+            first_rows = {}
+            batch_conflicts = set()
+            for row in self._batch:
+                transaction_id = str(row[0])
+                first_row = first_rows.setdefault(transaction_id, row)
+                if tuple(first_row[1:]) != tuple(row[1:]):
+                    batch_conflicts.add(transaction_id)
         persisted_conflicts = {
             transaction_id
             for transaction_id, row in unique_rows.items()
