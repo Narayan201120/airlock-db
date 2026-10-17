@@ -188,6 +188,16 @@ Measures JSONL parsing, dynamic-schema validation, SQLite writes, and report gen
 python scripts/benchmark_migration.py --rows 100000 --runs 3 --batch-size 500
 ```
 
+### Soak a large migration
+
+Generates a synthetic JSONL source, migrates it with the real CLI, and asserts the stored row count, the summary counts, the wall time, and the peak memory of the migration process against an optional ceiling. Results land in `soak_verification.json`.
+
+```powershell
+python scripts/soak_migration.py --rows 1000000 --max-peak-rss-mib 300
+```
+
+On the development machine, 1,000,000 rows migrate in about 37 seconds (27k records/s) at a 41 MiB peak, unchanged from 20,000 rows: the buffers stay flat as the row count grows. Peak RSS is exact when one run is measured on Linux or macOS, where the platform reports the finished child's high-water mark. Other combinations sample the live process every 50 ms, and a platform that cannot report memory leaves it unmeasured instead of failing the ceiling check. CI runs a reduced 100,000-row variant with the same ceiling.
+
 ## Exit codes
 
 | Code | Meaning |

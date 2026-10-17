@@ -92,11 +92,11 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 - What: `repair --emit-decisions` writes a decisions template for the error log, `--sample N` bounds a run for a quick previewing pass, and `--source-query SQL` reads a custom SELECT from a source database.
 - Verification: `scripts/verify_cli_wins.py` drives all three through the real CLI: sampled runs stop at the requested count and mark themselves as previews, queries filter, verify, and are refused when malformed, and an emitted template stays inert until a line is edited. Wired into CI beside the repair and source-database steps.
 
-### 14. Scale proof
+### 14. Scale proof (shipped)
 
 - What: a scripted 1M-row soak run that records wall time and peak memory, plus a reduced variant in CI.
 - Why: prove the streaming story at scale before the input surface grows again.
-- Verification: the soak script asserts stored rows, summary counts, and a memory ceiling; CI runs the reduced variant.
+- Verification: `scripts/soak_migration.py` migrated 1,000,000 rows in 37 s at 26.8k records/s with a 40.7 MiB peak, flat from 20,000 rows (39.3 MiB) and 100,000 rows (40.9 MiB), while asserting stored rows and summary counts and holding a 300 MiB ceiling. CI runs the 100,000-row variant on Linux.
 
 ## Explicitly out of scope
 

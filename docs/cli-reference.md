@@ -228,3 +228,13 @@ The benchmark writes its fixture and outputs to a temporary directory, verifies 
 
 - Add `--invalid-every 10` to make every tenth row fail enum validation and measure the error path.
 - Use `--config PATH` to benchmark another compatible dynamic schema.
+
+## Memory soak
+
+`scripts/soak_migration.py` proves the streaming story at scale: it generates a synthetic JSONL source, runs the real CLI once per `--runs`, and asserts the stored row count, the summary counts (`checked`/`valid`/`invalid`, `file_errors`, storage `inserted`/`status`), the wall time, and the peak memory against `--max-peak-rss-mib` when given.
+
+```powershell
+python scripts/soak_migration.py --rows 1000000 --max-peak-rss-mib 300 ci-soak
+```
+
+The optional `work_dir` keeps the generated source, each run's output directory, and `soak_verification.json`; without it the script uses a fresh temporary directory. Peak RSS is exact when a single run is measured on Linux or macOS (`getrusage` reports the finished child's high-water mark). On Windows, and with `--runs` above 1, the live process is sampled every 50 ms, so the number is a close approximation. When no platform reader is available the evidence records `null` and the ceiling is not checked, never failed.
