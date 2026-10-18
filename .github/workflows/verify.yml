@@ -135,6 +135,9 @@ jobs:
       - name: Input encoding override
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py ci-input-encoding
+      - name: Run-to-run comparison
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_run_compare.py ci-run-compare
       - name: XML equivalence
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_xml_equivalence.py \

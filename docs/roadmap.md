@@ -142,12 +142,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: XML stays declaration-driven by design, and fixed-width layouts keep the encoding from their layout file. The flag threads through `verify` and `infer` beside the existing CSV options.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py` requires every cp1252 fixture (JSONL, JSON array, TSV, CSV, and a gz member) to fail without the flag and migrate clean with it, the decoded text to survive into SQLite, CSV to keep `--csv-encoding` while accepting `--input-encoding`, a UTF-8-with-BOM file to read without flags, `verify` and `infer` to honor the flag, and unknown names to exit 2 or 1 (9 scenarios). Wired into CI.
 
-### 21. Run-to-run comparison
+### 21. Run-to-run comparison (shipped)
 
 - What: `airlock-db report --output-dir DIR --compare OTHER_DIR` adds a delta section to the rebuilt report: record-count changes, issue categories that appeared or disappeared, and per-source changes. It reads the two `airlock_summary.json` files only.
 - Why: after a repair pass the interesting number is what changed since the previous run, not the absolute count.
 - Scope: no database reads, no new files, one self-contained report. A category that did not exist before is shown as new, not as a percentage.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_run_compare.py` runs two migrations over mutated fixtures and requires the delta section to show the exact fixed and new counts, twice, proving determinism. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_run_compare.py` runs two migrations over mutated sources (rejected rows fixed, a different issue category introduced, a third source added) and requires the stdout line and the delta section to match the diff computed from the two summaries. It runs the command twice for a byte-identical section, requires a missing baseline to exit 2 without rewriting the report, requires a run compared with itself to report all zeros, and re-checks that the report stays script-free and self-contained (7 scenarios). Wired into CI.
 
 ### 22. Constraints for dynamic schemas
 

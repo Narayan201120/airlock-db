@@ -163,6 +163,58 @@ def _render_error_row(row: Mapping[str, Any]) -> str:
     )
 
 
+def _comparison_section(comparison: Mapping[str, Any] | None) -> str:
+    """Render the baseline-comparison section, or an empty string without one."""
+
+    if comparison is None:
+        return ""
+
+    record_rows = "".join(
+        f"<tr><td>{_escape(row.get('field', ''))}</td>"
+        f"<td>{int(row.get('before', 0))}</td>"
+        f"<td>{int(row.get('after', 0))}</td></tr>"
+        for row in comparison.get("records") or ()
+    )
+    new_codes = [str(code) for code in comparison.get("issue_new") or ()]
+    resolved_codes = [str(code) for code in comparison.get("issue_resolved") or ()]
+    new_text = (
+        ", ".join(f"<code>{_escape(code)}</code>" for code in new_codes)
+        if new_codes
+        else "(none)"
+    )
+    resolved_text = (
+        ", ".join(f"<code>{_escape(code)}</code>" for code in resolved_codes)
+        if resolved_codes
+        else "(none)"
+    )
+    source_rows = "".join(
+        f'<tr><td class="mono">{_escape(label)}</td><td>{status}</td></tr>'
+        for status in ("new", "changed", "removed")
+        for label in comparison.get(f"sources_{status}") or ()
+    )
+    if not source_rows:
+        source_rows = '<tr><td colspan="2" class="empty-row">(none)</td></tr>'
+
+    return f'''
+    <section class="section comparison" aria-labelledby="comparison-heading">
+      <h2 id="comparison-heading">Baseline comparison</h2>
+      <p class="quiet">Baseline directory: <span class="mono">{_escape(comparison.get('baseline', ''))}</span></p>
+      <table class="drift-table">
+        <thead><tr><th scope="col">Record field</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+        <tbody>{record_rows}</tbody>
+      </table>
+      <p class="quiet">Issue entries: {int(comparison.get('issues_total_before', 0))} before, {int(comparison.get('issues_total_after', 0))} now.</p>
+      <p>New issue categories: {new_text}</p>
+      <p>Resolved issue categories: {resolved_text}</p>
+      <h3>Sources</h3>
+      <table class="drift-table">
+        <thead><tr><th scope="col">Source</th><th scope="col">Change</th></tr></thead>
+        <tbody>{source_rows}</tbody>
+      </table>
+    </section>
+'''
+
+
 def render_html_report(
     metrics: ValidationMetrics,
     *,
@@ -172,6 +224,7 @@ def render_html_report(
     generated_at: datetime | None = None,
     repair_outcomes: Mapping[str, int] | None = None,
     notices: Sequence[str] = (),
+    comparison: Mapping[str, Any] | None = None,
 ) -> str:
     """Return a single-file report with inline styling, SVG, and error details."""
 
@@ -257,6 +310,8 @@ def render_html_report(
 '''
     else:
         repair_section = ""
+
+    comparison_section = _comparison_section(comparison)
 
     if visible_error_rows:
         rows_by_category: dict[str, list[str]] = {}
@@ -381,7 +436,7 @@ def render_html_report(
       <p class="quiet">{_escape(error_note)}</p>
       {error_body}
     </section>
-{repair_section}
+{repair_section}{comparison_section}
     <section class="section" aria-labelledby="sources-heading">
       <h2 id="sources-heading">Input sources</h2>
       <ul>{source_items}</ul>
@@ -402,6 +457,7 @@ def write_html_report(
     sources: Sequence[str] = (),
     repair_outcomes: Mapping[str, int] | None = None,
     notices: Sequence[str] = (),
+    comparison: Mapping[str, Any] | None = None,
 ) -> Path:
     """Write a UTF-8 standalone HTML file and return its path."""
 
@@ -414,6 +470,7 @@ def write_html_report(
         sources=sources,
         repair_outcomes=repair_outcomes,
         notices=notices,
+        comparison=comparison,
     )
     temporary_path: Path | None = None
     try:

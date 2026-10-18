@@ -63,6 +63,68 @@ def _metrics_from_summary(summary: Mapping[str, Any]) -> ValidationMetrics:
     return metrics
 
 
+def _source_counts(source_counts: Mapping[str, Any], label: str) -> tuple[int, int, int]:
+    counts = source_counts.get(label) or {}
+    return (
+        int(counts.get("records", 0)),
+        int(counts.get("valid", 0)),
+        int(counts.get("invalid", 0)),
+    )
+
+
+def _comparison_from_summaries(
+    before: Mapping[str, Any], after: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Diff two run summaries; the baseline is ``before``, the now run is ``after``."""
+
+    before_records = before.get("records") or {}
+    after_records = after.get("records") or {}
+    record_rows = [
+        {
+            "field": field,
+            "before": int(before_records.get(field, 0)),
+            "after": int(after_records.get(field, 0)),
+        }
+        for field in ("checked", "valid", "invalid", "file_errors")
+    ]
+    records_changed = sum(
+        1 for row in record_rows if row["before"] != row["after"]
+    )
+
+    before_codes = dict((before.get("issues") or {}).get("by_code") or {})
+    after_codes = dict((after.get("issues") or {}).get("by_code") or {})
+    issue_new = sorted(set(after_codes) - set(before_codes))
+    issue_resolved = sorted(set(before_codes) - set(after_codes))
+    issues_total_before = int((before.get("issues") or {}).get("total", 0))
+    issues_total_after = int((after.get("issues") or {}).get("total", 0))
+
+    before_sources = before.get("source_counts") or {}
+    after_sources = after.get("source_counts") or {}
+    sources_new = sorted(set(after_sources) - set(before_sources))
+    sources_removed = sorted(set(before_sources) - set(after_sources))
+    sources_changed = sorted(
+        label
+        for label in set(before_sources) & set(after_sources)
+        if _source_counts(before_sources, label) != _source_counts(after_sources, label)
+    )
+
+    return {
+        "baseline": "",
+        "records": record_rows,
+        "records_changed": records_changed,
+        "issue_new": issue_new,
+        "issue_resolved": issue_resolved,
+        "issues_total_before": issues_total_before,
+        "issues_total_after": issues_total_after,
+        "sources_new": sources_new,
+        "sources_removed": sources_removed,
+        "sources_changed": sources_changed,
+        "sources_changed_count": (
+            len(sources_new) + len(sources_removed) + len(sources_changed)
+        ),
+    }
+
+
 def _managed_table_row_count(database: Path) -> int:
     """Count rows in the single managed table of an existing target database."""
 
@@ -135,12 +197,18 @@ def refresh_main(argv: Sequence[str] | None = None) -> int:
         description="Rebuild airlock_report.html from airlock_summary.json and repair progress.",
     )
     parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--compare", metavar="OTHER_DIR", default=None)
     args = parser.parse_args(argv)
 
     output_dir = Path(args.output_dir)
     try:
         summary = _load_summary(output_dir / "airlock_summary.json")
         metrics = _metrics_from_summary(summary)
+        comparison: Mapping[str, Any] | None = None
+        if args.compare:
+            baseline_summary = _load_summary(Path(args.compare) / "airlock_summary.json")
+            comparison = _comparison_from_summaries(baseline_summary, summary)
+            comparison["baseline"] = str(Path(args.compare))
         error_rows = summary.get("issue_rows") or []
         sources = summary.get("sources") or []
         storage = dict(summary.get("storage") or {})
@@ -173,11 +241,19 @@ def refresh_main(argv: Sequence[str] | None = None) -> int:
             sources=sources,
             repair_outcomes=repair_outcomes,
             notices=notices,
+            comparison=comparison,
         )
     except (OSError, ValueError, RepairLogError, sqlite3.Error) as exc:
         return _fail(str(exc))
 
     print(f"Report refreshed: {report_path}")
+    if comparison is not None:
+        print(
+            f"Comparison: {comparison['records_changed']} record fields changed, "
+            f"{len(comparison['issue_new'])} issue categories new, "
+            f"{len(comparison['issue_resolved'])} resolved, "
+            f"{comparison['sources_changed_count']} sources changed"
+        )
     if repair_outcomes is not None:
         print(
             f"Repair outcomes: {repair_outcomes['corrected']} corrected, "

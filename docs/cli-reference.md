@@ -249,7 +249,7 @@ When a value fails a type check, the issue message states that no automatic type
 
 The HTML report contains the success/failure SVG, drift counts, SQLite write totals, and a bounded issue table. Issue previews are capped. Setting `--max-report-issues 0` omits issue rows while still showing the omitted count. Expand an issue's input details in the table to inspect its captured value. The report embeds no scripts, fonts, stylesheets, or other external resources.
 
-The report is written during migration. A repair session updates the database and its checkpoints, but does not regenerate the report.
+The report is written during migration. A repair session updates the database and its checkpoints, but does not regenerate the report. Rebuild it after a repair pass with `python main.py report --output-dir DIR`. Add `--compare OTHER_DIR` to append a delta section that reconciles the run against another run's `airlock_summary.json`: record-count changes, issue categories that appeared or disappeared, and per-source changes. The delta reads the two summaries only, and a missing or malformed baseline summary stops the command with exit code 2 before the report is rewritten.
 
 ## Performance benchmark
 
