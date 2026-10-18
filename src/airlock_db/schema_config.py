@@ -18,6 +18,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from .config_io import ConfigLoadError, load_config_object
 from .transforms import TransformConfigError, TransformRule, parse_transforms
 
 
@@ -124,102 +125,21 @@ class DynamicSchema:
     def from_file(cls, path: str | Path) -> DynamicSchema:
         """Load JSON or YAML and compile the configured strict model."""
 
-        source = Path(path)
         try:
-            with source.open("rb") as stream:
-                content = stream.read(_MAX_CONFIG_BYTES + 1)
-        except OSError as exc:
-            raise SchemaConfigError(f"cannot read schema config {source}: {exc}") from exc
-        if len(content) > _MAX_CONFIG_BYTES:
-            raise SchemaConfigError(
-                f"schema config exceeds the {_MAX_CONFIG_BYTES}-byte limit"
+            raw = load_config_object(
+                path,
+                label="schema config",
+                max_bytes=_MAX_CONFIG_BYTES,
             )
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeError as exc:
-            raise SchemaConfigError(f"schema config must be UTF-8: {exc}") from exc
-
-        suffix = source.suffix.casefold()
-        try:
-            if suffix == ".json":
-                raw = json.loads(
-                    text,
-                    object_pairs_hook=_unique_json_object,
-                    parse_constant=_reject_json_constant,
-                )
-            elif suffix in {".yaml", ".yml"}:
-                raw = _load_unique_key_yaml(text, str(source))
-            else:
-                raise SchemaConfigError("schema config file must end in .json, .yaml, or .yml")
-        except SchemaConfigError:
-            raise
-        except (json.JSONDecodeError, RecursionError) as exc:
-            raise SchemaConfigError(f"invalid schema config {source}: {exc}") from exc
+        except ConfigLoadError as exc:
+            raise SchemaConfigError(str(exc)) from exc
 
         try:
             return _compile_schema(raw)
         except SchemaConfigError:
             raise
         except Exception as exc:
-            raise SchemaConfigError(f"invalid schema config {source}: {exc}") from exc
-
-
-def _reject_json_constant(value: str) -> Any:
-    raise SchemaConfigError(f"non-standard JSON constant is not supported: {value}")
-
-
-def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise SchemaConfigError(f"duplicate schema config key: {key}")
-        result[key] = value
-    return result
-
-
-def _load_unique_key_yaml(text: str, label: str) -> Any:
-    """Parse YAML with the safe loader, rejecting aliases and duplicate keys.
-
-    PyYAML is imported here so a plain JSON run never pays its import cost.
-    """
-
-    import yaml
-    from yaml.events import AliasEvent
-    from yaml.nodes import MappingNode
-
-    class _UniqueKeySafeLoader(yaml.SafeLoader):
-        """Safe YAML loader that rejects ambiguous keys and aliases."""
-
-        def compose_node(self, parent: Any, index: Any) -> Any:
-            if self.check_event(AliasEvent):
-                raise SchemaConfigError(
-                    "YAML aliases are not supported in schema configs"
-                )
-            return super().compose_node(parent, index)
-
-        def construct_mapping(
-            self, node: MappingNode, deep: bool = False
-        ) -> dict[str, Any]:
-            if not isinstance(node, MappingNode):
-                raise SchemaConfigError("schema config mappings must use string keys")
-            result: dict[str, Any] = {}
-            for key_node, value_node in node.value:
-                key = self.construct_object(key_node, deep=deep)
-                if not isinstance(key, str):
-                    raise SchemaConfigError("schema config mapping keys must be strings")
-                if key in result:
-                    raise SchemaConfigError(f"duplicate schema config key: {key}")
-                result[key] = self.construct_object(value_node, deep=deep)
-            return result
-
-    _UniqueKeySafeLoader.add_constructor(
-        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-        _UniqueKeySafeLoader.construct_mapping,
-    )
-    try:
-        return yaml.load(text, Loader=_UniqueKeySafeLoader)
-    except yaml.YAMLError as exc:
-        raise SchemaConfigError(f"invalid YAML schema config {label}: {exc}") from exc
+            raise SchemaConfigError(f"invalid schema config {path}: {exc}") from exc
 
 
 def _require_bool(value: Any, label: str) -> bool:

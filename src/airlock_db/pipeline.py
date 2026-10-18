@@ -18,6 +18,7 @@ from uuid import UUID
 from pydantic import BaseModel, ValidationError
 
 from .constraints import ValidationConstraints
+from .fixed_width import FixedWidthLayout
 from .ingestion import DatabaseSource, InputRecord, iter_source_records
 from .schemas import FinancialTransaction
 from .transforms import TransformFailure, TransformRule, normalize_record
@@ -527,6 +528,7 @@ def iter_validated_records(
     excluded_paths: Iterable[str | Path] = (),
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[MigrationRecordResult, None, None]:
     """Validate records from one or more files/directories without stopping on bad rows.
 
@@ -553,6 +555,7 @@ def iter_validated_records(
                 excluded_paths=excluded_path_list,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                fixed_width=fixed_width,
             )
             try:
                 for item in records:

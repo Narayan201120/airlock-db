@@ -104,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
     )
     parser.add_argument(
+        "--fixed-width",
+        metavar="PATH",
+        help="JSON or YAML layout that reads every input file as fixed-width records instead of by suffix",
+    )
+    parser.add_argument(
         "-c",
         "--constraints",
         metavar="JSON",
@@ -437,6 +442,7 @@ def run_migration(args: argparse.Namespace) -> int:
     from .anonymize import RunAnonymizer
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import DynamicSQLiteTargetStore
+    from .fixed_width import FixedWidthConfigError, FixedWidthLayout
     from .ingestion import DatabaseSource, validate_source_query
     from .jsonl_target import JsonlTargetWriter
     from .pipeline import DriftCategory, ValidationMetrics, iter_validated_records
@@ -519,6 +525,13 @@ def run_migration(args: argparse.Namespace) -> int:
             "for this run's records only",
             file=sys.stderr,
         )
+    fixed_width_layout: FixedWidthLayout | None = None
+    if getattr(args, "fixed_width", None):
+        try:
+            fixed_width_layout = FixedWidthLayout.from_file(args.fixed_width)
+        except FixedWidthConfigError as exc:
+            print(f"airlock-db: {exc}", file=sys.stderr)
+            return 2
     dynamic_schema: DynamicSchema | None = None
     if getattr(args, "config", None):
         try:
@@ -766,6 +779,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 source_labeler=(anonymizer.source_label if anonymizer else None),
                 model=record_model,
                 transforms=dynamic_schema.transforms if dynamic_schema else None,
+                fixed_width=fixed_width_layout,
                 excluded_paths=(repair_log_path,) if repair_log_path is not None else (),
                 csv_delimiter=getattr(args, "csv_delimiter", None),
                 csv_encoding=getattr(args, "csv_encoding", None),

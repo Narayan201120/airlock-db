@@ -179,6 +179,9 @@ jobs:
       - name: Schema transforms
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_transforms.py ci-transforms
+      - name: Fixed-width input
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_fixed_width.py ci-fixed-width
       - name: JSONL and CSV reader edges
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_jsonl_reader.py ci-reader-edges

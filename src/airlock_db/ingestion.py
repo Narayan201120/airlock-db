@@ -18,6 +18,8 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, TextIO
 
+from .fixed_width import FixedWidthLayout
+
 
 logger = logging.getLogger(__name__)
 SUPPORTED_SUFFIXES = {".csv", ".json", ".jsonl", ".ndjson", ".tsv", ".xml"}
@@ -29,6 +31,7 @@ _JSON_CHUNK_SIZE = 64 * 1024
 _MAX_JSON_RECORD_CHARS = 512 * 1024
 _MAX_JSONL_RECORD_BYTES = 512 * 1024
 _MAX_CSV_RECORD_CHARS = 512 * 1024
+_MAX_FIXED_WIDTH_RECORD_CHARS = 512 * 1024
 # csv's C reader must be able to hand over large individual fields so the
 # per-row cap above can flag them; beyond this bound csv.Error is reported
 # for the source instead.
@@ -1247,6 +1250,8 @@ def _is_supported_source_file(path: Path) -> bool:
 def _iter_source_paths(
     path: Path,
     excluded_paths: frozenset[str],
+    *,
+    accept_all: bool = False,
 ) -> Generator[Path | InputRecord, None, None]:
     try:
         if path.is_file():
@@ -1259,7 +1264,7 @@ def _iter_source_paths(
                     ),
                 )
                 return
-            if _is_supported_source_file(path):
+            if accept_all or _is_supported_source_file(path):
                 yield path
             else:
                 yield InputRecord(
@@ -1338,7 +1343,7 @@ def _iter_source_paths(
                     )
                     continue
                 if child.is_symlink():
-                    if _is_supported_source_file(child):
+                    if accept_all or _is_supported_source_file(child):
                         found_supported_file = True
                         yield InputRecord(
                             str(child),
@@ -1351,7 +1356,9 @@ def _iter_source_paths(
                     continue
                 if child.is_dir():
                     child_directories.append(child)
-                elif child.is_file() and _is_supported_source_file(child):
+                elif child.is_file() and (
+                    accept_all or _is_supported_source_file(child)
+                ):
                     if _normalized_source_path(child) in excluded_paths:
                         continue
                     found_supported_file = True
@@ -1372,9 +1379,14 @@ def _iter_source_paths(
         pending.extend(reversed(child_directories))
 
     if not found_supported_file:
+        message = (
+            "No input files were found."
+            if accept_all
+            else "No supported JSON, JSONL, NDJSON, XML, CSV, TSV, or compressed (.gz, .zip) files were found."
+        )
         yield InputRecord(
             str(path), None,
-            issue=SourceIssue("no_supported_files", "No supported JSON, JSONL, NDJSON, XML, CSV, TSV, or compressed (.gz, .zip) files were found."),
+            issue=SourceIssue("no_supported_files", message),
         )
 
 
@@ -1653,6 +1665,74 @@ def _iter_csv_file(
         )
 
 
+def _iter_fixed_width_file(
+    path: Path,
+    *,
+    layout: FixedWidthLayout,
+    source_labeler: Callable[[str], str] | None = None,
+    opener: Callable[..., Any] | None = None,
+) -> Generator[InputRecord, None, None]:
+    """Yield positional records from one fixed-width text file.
+
+    Banner lines named by the layout are skipped, blank physical lines are
+    skipped, and file-level failures are yielded as records with an attached
+    ``issue``. A line shorter than the layout is a per-row
+    ``fixed_width_short_line`` issue so later lines can still be read.
+    Padding inside a span is stripped, and an all-padding span becomes None.
+    """
+
+    record_number = 0
+    try:
+        open_stream = opener if opener is not None else path.open
+        with open_stream(
+            "rt", encoding=layout.encoding, errors="strict", newline=""
+        ) as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if line_number <= layout.skip_lines:
+                    continue
+                text = line.rstrip("\r\n")
+                if not text.strip():
+                    continue
+                record_number += 1
+                if len(text) > _MAX_FIXED_WIDTH_RECORD_CHARS:
+                    yield InputRecord(
+                        str(path),
+                        record_number,
+                        issue=SourceIssue(
+                            "record_too_large",
+                            f"Fixed-width line exceeds {_MAX_FIXED_WIDTH_RECORD_CHARS} characters",
+                        ),
+                    )
+                    continue
+                if len(text) < layout.record_length:
+                    yield InputRecord(
+                        str(path),
+                        record_number,
+                        issue=SourceIssue(
+                            "fixed_width_short_line",
+                            f"record has {len(text)} column(s); the layout reads up to column {layout.record_length}",
+                        ),
+                    )
+                    continue
+                yield InputRecord(str(path), record_number, value=layout.split(text))
+    except UnicodeError as exc:
+        yield _source_issue(path, None, "encoding_error", exc, incomplete=record_number > 0)
+    except OSError as exc:
+        yield _source_issue(path, None, "io_error", exc, incomplete=record_number > 0)
+    except Exception as exc:
+        if source_labeler is None:
+            logger.exception("Unexpected fixed-width reader failure for %s", path)
+        else:
+            logger.error(
+                "Unexpected fixed-width reader failure for %s (%s)",
+                source_labeler(str(path)),
+                type(exc).__name__,
+            )
+        yield _source_issue(
+            path, None, "fixed_width_reader_error", exc, incomplete=record_number > 0
+        )
+
+
 def _records_for_suffix(
     path: Path,
     suffix: str,
@@ -1661,9 +1741,17 @@ def _records_for_suffix(
     source_labeler: Callable[[str], str] | None,
     csv_delimiter: str | None,
     csv_encoding: str | None,
+    fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[InputRecord, None, None] | None:
     """Pick the reader for a content suffix, or None when unsupported."""
 
+    if fixed_width is not None:
+        return _iter_fixed_width_file(
+            path,
+            layout=fixed_width,
+            source_labeler=source_labeler,
+            opener=opener,
+        )
     if suffix == ".json":
         return _iter_json_file(path, source_labeler=source_labeler, opener=opener)
     if suffix in {".jsonl", ".ndjson"}:
@@ -1710,6 +1798,7 @@ def _iter_archive_file(
     source_labeler: Callable[[str], str] | None = None,
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Stream records from a .gz file or a .zip archive without extracting.
 
@@ -1722,7 +1811,7 @@ def _iter_archive_file(
     suffix = path.suffix.casefold()
     if suffix == ".gz":
         content_suffix = _effective_suffix(path)
-        if content_suffix not in SUPPORTED_SUFFIXES:
+        if fixed_width is None and content_suffix not in SUPPORTED_SUFFIXES:
             yield InputRecord(
                 str(path),
                 None,
@@ -1740,6 +1829,7 @@ def _iter_archive_file(
             source_labeler=source_labeler,
             csv_delimiter=csv_delimiter,
             csv_encoding=csv_encoding,
+            fixed_width=fixed_width,
         )
         if records is not None:
             try:
@@ -1773,7 +1863,7 @@ def _iter_archive_file(
             if info.is_dir():
                 continue
             member_suffix = Path(info.filename).suffix.casefold()
-            if member_suffix not in SUPPORTED_SUFFIXES:
+            if fixed_width is None and member_suffix not in SUPPORTED_SUFFIXES:
                 continue
             members.append((info.filename, member_suffix))
         members.sort(key=lambda item: item[0].casefold())
@@ -1783,7 +1873,11 @@ def _iter_archive_file(
                 None,
                 issue=SourceIssue(
                     "no_supported_files",
-                    "Archive contains no supported JSON, JSONL, NDJSON, XML, CSV, or TSV members.",
+                    (
+                        "Archive contains no entries."
+                        if fixed_width is not None
+                        else "Archive contains no supported JSON, JSONL, NDJSON, XML, CSV, or TSV members."
+                    ),
                 ),
             )
             return
@@ -1796,6 +1890,7 @@ def _iter_archive_file(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                fixed_width=fixed_width,
             )
             if records is None:
                 continue
@@ -1812,14 +1907,17 @@ def iter_source_records(
     excluded_paths: Iterable[str | Path] = (),
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Yield decoded records from one file, directory, or database table.
 
     JSON arrays are decoded incrementally. JSONL/NDJSON and CSV/TSV syntax
     errors are isolated to their physical row so subsequent rows can still
     be read. ``csv_delimiter`` and ``csv_encoding`` override the defaults
-    for CSV/TSV sources. File-level and database-level failures are yielded
-    as records with an attached ``issue``.
+    for CSV/TSV sources. ``fixed_width`` replaces suffix-based readers with
+    one positional layout, including for archive members and directory
+    scans. File-level and database-level failures are yielded as records
+    with an attached ``issue``.
     """
 
     if isinstance(source, DatabaseSource):
@@ -1828,7 +1926,7 @@ def iter_source_records(
 
     path = Path(source)
     excluded = frozenset(_normalized_source_path(item) for item in excluded_paths)
-    for entry in _iter_source_paths(path, excluded):
+    for entry in _iter_source_paths(path, excluded, accept_all=fixed_width is not None):
         if isinstance(entry, InputRecord):
             yield entry
             continue
@@ -1839,6 +1937,7 @@ def iter_source_records(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                fixed_width=fixed_width,
             )
         else:
             records = _records_for_suffix(
@@ -1848,6 +1947,7 @@ def iter_source_records(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                fixed_width=fixed_width,
             )
         if records is None:
             continue

@@ -12,6 +12,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 | `--source-query SQL` | A single SELECT statement read from each `--source-db` instead of a table. One query per database; cannot be combined with `--source-table`. |
 | `--csv-delimiter CHAR` | Delimiter for CSV input. Defaults to a comma, or a tab for `.tsv` files. |
 | `--csv-encoding NAME` | Text encoding for CSV input. Defaults to `utf-8-sig` (tolerates a BOM). |
+| `--fixed-width PATH` | JSON or YAML layout that reads every input file as fixed-width records instead of choosing a reader by suffix. |
 | `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
 | `--config PATH` | Optional JSON or YAML file defining a dynamic record schema. |
 | `--output-dir DIR` | Output directory. Defaults to `output`. |
@@ -69,6 +70,23 @@ A preview is not a handoff. `verify` against a sampled target reports the unscan
 `.csv` and `.tsv` files are read with the standard library `csv` module. The first non-blank line is the header; header names map to schema fields exactly like JSON keys, so missing and unknown columns produce the usual drift errors. Empty cells become `null`. A row with more values than the header defines is rejected as `csv_extra_values`.
 
 Encoding defaults to `utf-8-sig`, which tolerates a byte-order mark, and the delimiter defaults to a comma or, for `.tsv`, a tab. Override either with `--csv-delimiter` and `--csv-encoding`. A missing or duplicate header stops the file with a clear `csv_header_missing` or `csv_duplicate_header` source error.
+
+### Fixed-width input
+
+`--fixed-width layout.json` reads undelimited positional text, such as a mainframe or COBOL handoff. The layout is a small JSON or YAML file with an optional `encoding` (default `utf-8-sig`), an optional `skip_lines` count for banner lines, and a `fields` list of named spans:
+
+```json
+{
+  "encoding": "cp1252",
+  "skip_lines": 1,
+  "fields": [
+    {"name": "transaction_id", "start": 1, "length": 36},
+    {"name": "account_id", "start": 37, "length": 8}
+  ]
+}
+```
+
+`start` is a 1-based column and `length` counts columns, spaces included. Padding inside a span is trimmed, and an all-padding span becomes `null` exactly like an empty CSV cell. With the flag set, every discovered file, archive member, and directory-scan result is read with this one layout; the file suffix no longer selects a reader. Overlapping spans, out-of-order spans, duplicate names, and unknown keys stop the run before any input is read. A line shorter than the layout rejects that record with a `fixed_width_short_line` issue and the run continues. `verify` accepts the same flag to replay the original reader, and `infer` accepts it to draft a layout from fixed-width data.
 
 ### Compressed input
 
@@ -186,7 +204,7 @@ python main.py infer --input legacy/tickets.json --output schema_draft.yaml
 python main.py --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
 
-The draft reads the input with the normal readers, including directories, compressed files, and CSV, then classifies each field from the values it sees. Types stay conservative: numeric text keeps its exact spelling as `decimal`, ISO text becomes `date` or `datetime`, and mixed text formats fall back to `string`, which accepts every observed value. A field is `required` only when it is present and non-null in every scanned record.
+The draft reads the input with the normal readers, including directories, compressed files, CSV, and fixed-width files under `--fixed-width`, then classifies each field from the values it sees. Types stay conservative: numeric text keeps its exact spelling as `decimal`, ISO text becomes `date` or `datetime`, and mixed text formats fall back to `string`, which accepts every observed value. A field is `required` only when it is present and non-null in every scanned record.
 
 Conflicts are marked, not hidden. When no safe type fits the observed values, the draft uses the most common kind, prints the field under `Conflicts`, and the first migration reports the minority rows as invalid. YAML drafts carry these notes as comments. Review the draft before trusting it; `infer` never writes lengths, patterns, or enum lists.
 
@@ -212,7 +230,7 @@ After a run, `verify` reconciles the committed target database with the sources 
 python main.py verify --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
 
-The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
+The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--fixed-width`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
 
 Duplicate keys follow the recorded policy: `skip` keeps the first occurrence, `replace` keeps the last. `--conflict-policy` overrides the policy recorded in `airlock_summary.json`, and a disagreement prints a warning. For anonymized runs the anonymized fields are excluded from the digests, because the tokens use a run-scoped key that is never stored; `--anonymized` forces that behavior when the summary is missing.
 

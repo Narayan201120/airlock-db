@@ -69,6 +69,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
     from .anonymize import BUILTIN_ANONYMIZED_FIELDS
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import dynamic_row, quote_identifier
+    from .fixed_width import FixedWidthConfigError, FixedWidthLayout
     from .ingestion import DatabaseSource, validate_source_query
     from .pipeline import iter_validated_records
     from .schema_config import DynamicSchema, SchemaConfigError
@@ -121,6 +122,11 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         "--csv-encoding",
         metavar="NAME",
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
+    )
+    parser.add_argument(
+        "--fixed-width",
+        metavar="PATH",
+        help="the JSON or YAML fixed-width layout used by the original run",
     )
     parser.add_argument(
         "-c",
@@ -200,6 +206,12 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             2,
         )
 
+    fixed_width_layout: FixedWidthLayout | None = None
+    if args.fixed_width:
+        try:
+            fixed_width_layout = FixedWidthLayout.from_file(args.fixed_width)
+        except FixedWidthConfigError as exc:
+            return _fail(str(exc), 2)
     dynamic_schema: DynamicSchema | None = None
     if args.config:
         try:
@@ -317,6 +329,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     ),
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
+                    fixed_width=fixed_width_layout,
                 ):
                     record = result.transaction
                     if record is None:

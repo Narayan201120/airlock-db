@@ -107,12 +107,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: dynamic schema configs only; the built-in financial model keeps its current strictness. Transforms feed the schema fingerprint and `verify` re-applies them, so digests stay comparable. The summary gains a normalized-fields count.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_transforms.py` migrates a dirty fixture with padded text, European dates and decimals, and enum aliases, and requires the exact normalized stored values, two `transform_failed` rejections naming the field and the rule, a passing `verify` and a failing tampered one, distinct fingerprints for alias variants, three fail-fast config errors, and a repair session that normalizes corrected values the same way (7 scenarios). Wired into CI.
 
-### 16. Fixed-width positional input
+### 16. Fixed-width positional input (shipped)
 
 - What: `--fixed-width PATH` points to a small JSON or YAML layout: an encoding, an optional skip count for banner lines, and one entry per field with a 1-based start and a length. Values stream through the same validation as every other reader. Overlapping spans, out-of-order spans, and duplicate names fail before the run starts.
 - Why: mainframe and Cobol handoffs arrive as undelimited text. Today they are rejected as unsupported files.
 - Scope: one record layout per file, no record-type branching. A short line becomes a per-row `fixed_width_short_line` issue instead of a crash. The flag routes archive members and directory scans, and it threads through `verify` and `infer`.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_fixed_width.py` builds a fixed-width twin of a checked fixture, migrates it, and requires stored rows and counts identical to the delimited twin; then requires a short line and a bad span spec to fail as designed. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_fixed_width.py` migrates a fixed-width twin of a delimited fixture and requires identical stored rows and counts (3/3/0), a passing `verify` and a failing one without the flag, identical records through a directory scan, a gzip layer, and a zip member whose `.dat` suffix is otherwise unsupported, a cp1252 layout that keeps a `Müller & Söhne GmbH` counterparty while an all-padding span becomes null, one short line in a three-row file rejecting exactly that row with `fixed_width_short_line`, three fail-fast layout errors that write no summary, and an `infer` draft that then migrates the same file (9 scenarios). Wired into CI.
 
 ### 17. Verification for JSONL targets
 

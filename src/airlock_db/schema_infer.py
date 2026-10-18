@@ -336,13 +336,26 @@ def infer_main(argv: Sequence[str] | None = None) -> int:
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
     )
     parser.add_argument(
+        "--fixed-width",
+        metavar="PATH",
+        help="JSON or YAML layout that reads every input file as fixed-width records instead of by suffix",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="replace the output file when it already exists",
     )
     args = parser.parse_args(argv)
 
+    from .fixed_width import FixedWidthConfigError, FixedWidthLayout
     from .ingestion import iter_source_records
+
+    fixed_width_layout: FixedWidthLayout | None = None
+    if args.fixed_width:
+        try:
+            fixed_width_layout = FixedWidthLayout.from_file(args.fixed_width)
+        except FixedWidthConfigError as exc:
+            return _fail(str(exc))
 
     if not valid_model_name(args.model_name):
         return _fail("model_name must be a simple Python class name")
@@ -358,6 +371,7 @@ def infer_main(argv: Sequence[str] | None = None) -> int:
         excluded_paths=[output_path],
         csv_delimiter=args.csv_delimiter,
         csv_encoding=args.csv_encoding,
+        fixed_width=fixed_width_layout,
     )
     try:
         fields, scanned, skipped_issues, skipped_non_objects, issue_examples = _scan_records(
