@@ -100,12 +100,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 
 ## Tier 5: planned (target v0.4.0)
 
-### 15. Normalization rules in dynamic schema configs
+### 15. Normalization rules in dynamic schema configs (shipped)
 
 - What: an optional `transforms` list per field in JSON and YAML schema configs. Stdlib-only rules run in listed order before validation: trim whitespace, fold case, parse a datetime with an explicit strptime pattern into ISO 8601, normalize decimal text with a places bound, and map enum aliases to canonical values. A value a rule cannot convert is rejected with a `transform_failed` reason that names the field and the rule.
 - Why: legacy exports carry padded, mixed-case, and locale-formatted values that are fixable on the spot. Today a `31/12/2025` date rejects the row and pushes it into per-row repair.
 - Scope: dynamic schema configs only; the built-in financial model keeps its current strictness. Transforms feed the schema fingerprint and `verify` re-applies them, so digests stay comparable. The summary gains a normalized-fields count.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_transforms.py` migrates a fixture with dirty dates, decimals, and enum aliases, requires the exact stored values, requires unconvertible values to fail with the transform named, and requires an untouched run to verify. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_transforms.py` migrates a dirty fixture with padded text, European dates and decimals, and enum aliases, and requires the exact normalized stored values, two `transform_failed` rejections naming the field and the rule, a passing `verify` and a failing tampered one, distinct fingerprints for alias variants, three fail-fast config errors, and a repair session that normalizes corrected values the same way (7 scenarios). Wired into CI.
 
 ### 16. Fixed-width positional input
 

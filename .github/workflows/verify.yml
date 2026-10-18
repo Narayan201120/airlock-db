@@ -176,6 +176,9 @@ jobs:
         run: |
           printf '{"ticket_id": "TKT-000001", "customer_name": "Alice", "priority": "HIGH", "opened_at": "2026-01-05T08:00:00Z"}\n' > ci-ticket.jsonl
           python main.py --input ci-ticket.jsonl --config examples/schema_config.yaml --output-dir ci-yaml
+      - name: Schema transforms
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_transforms.py ci-transforms
       - name: JSONL and CSV reader edges
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_jsonl_reader.py ci-reader-edges

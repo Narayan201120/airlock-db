@@ -539,10 +539,13 @@ def run_repair(
     def _validate_and_stage(candidate_value: Any, entry_number_value: int) -> bool:
         nonlocal staging_bytes, staged_decisions, repaired
         try:
-            record, issues = validate_record_value(
+            record, issues, _ = validate_record_value(
                 candidate_value,
                 model=model,
                 constraints=constraints,
+                transforms=(
+                    dynamic_schema.transforms if dynamic_schema is not None else None
+                ),
             )
         except Exception as exc:
             details = type(exc).__name__ if anonymizer is not None else f"{type(exc).__name__}: {exc}"
@@ -806,10 +809,15 @@ def run_repair(
                         candidate = _restore_spooled_decimals(
                             decision["record"], decision["decimal_paths"]
                         )
-                        record, issues = validate_record_value(
+                        record, issues, _ = validate_record_value(
                             candidate,
                             model=model,
                             constraints=constraints,
+                            transforms=(
+                                dynamic_schema.transforms
+                                if dynamic_schema is not None
+                                else None
+                            ),
                         )
                         if record is None:
                             raise ValueError("a staged correction no longer passes schema validation")

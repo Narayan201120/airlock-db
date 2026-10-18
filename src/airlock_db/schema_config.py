@@ -7,7 +7,8 @@ import json
 import keyword
 import math
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
@@ -16,6 +17,8 @@ from typing import Any, Literal, Union
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
+
+from .transforms import TransformConfigError, TransformRule, parse_transforms
 
 
 _MAX_CONFIG_BYTES = 1024 * 1024
@@ -45,6 +48,7 @@ _ALLOWED_FIELD_KEYS = frozenset(
         "decimal_places",
         "values",
         "anonymize",
+        "transforms",
     }
 )
 _TYPE_ANNOTATIONS: dict[str, type[Any]] = {
@@ -102,6 +106,7 @@ class DynamicSchema:
     fields: tuple[DynamicField, ...]
     id_field: str
     fingerprint: str
+    transforms: Mapping[str, tuple[TransformRule, ...]] = field(default_factory=dict)
 
     @property
     def field_names(self) -> frozenset[str]:
@@ -288,6 +293,7 @@ def _compile_schema(raw: Any) -> DynamicSchema:
     field_definitions: dict[str, tuple[Any, Any]] = {}
     dynamic_fields: list[DynamicField] = []
     normalized_fields: dict[str, dict[str, Any]] = {}
+    transforms_by_field: dict[str, tuple[TransformRule, ...]] = {}
     seen_names: set[str] = set()
     for name, spec in raw_fields.items():
         if not valid_field_name(name):
@@ -416,6 +422,22 @@ def _compile_schema(raw: Any) -> DynamicSchema:
         elif any(option in spec for option in ("gt", "ge", "lt", "le", "max_digits", "decimal_places")):
             raise SchemaConfigError(f"numeric constraints are not valid for {name}")
 
+        field_transforms: tuple[TransformRule, ...] = ()
+        if "transforms" in spec:
+            try:
+                field_transforms = parse_transforms(
+                    spec["transforms"],
+                    field=name,
+                    type_name=type_name,
+                    enum_values=values,
+                )
+            except TransformConfigError as exc:
+                raise SchemaConfigError(str(exc)) from exc
+            normalized["transforms"] = [
+                rule.canonical() for rule in field_transforms
+            ]
+            transforms_by_field[name] = field_transforms
+
         if anonymize:
             if type_name != "string" or "pattern" in spec or values:
                 raise SchemaConfigError(
@@ -489,4 +511,5 @@ def _compile_schema(raw: Any) -> DynamicSchema:
         fields=tuple(dynamic_fields),
         id_field=id_field,
         fingerprint=fingerprint,
+        transforms=transforms_by_field,
     )

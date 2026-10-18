@@ -765,6 +765,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 constraints=constraints,
                 source_labeler=(anonymizer.source_label if anonymizer else None),
                 model=record_model,
+                transforms=dynamic_schema.transforms if dynamic_schema else None,
                 excluded_paths=(repair_log_path,) if repair_log_path is not None else (),
                 csv_delimiter=getattr(args, "csv_delimiter", None),
                 csv_encoding=getattr(args, "csv_encoding", None),

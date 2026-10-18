@@ -312,6 +312,9 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     sources,
                     constraints=constraints,
                     model=dynamic_schema.model if dynamic_schema else FinancialTransaction,
+                    transforms=(
+                        dynamic_schema.transforms if dynamic_schema is not None else None
+                    ),
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
                 ):

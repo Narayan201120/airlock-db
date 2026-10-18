@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from .constraints import ValidationConstraints
 from .ingestion import DatabaseSource, InputRecord, iter_source_records
 from .schemas import FinancialTransaction
+from .transforms import TransformFailure, TransformRule, normalize_record
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ class MigrationRecordResult:
     transaction: BaseModel | None = None
     issues: tuple[ValidationIssue, ...] = ()
     source_incomplete: bool = False
+    normalized_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (self.transaction is None and not self.issues) or (
@@ -129,6 +131,7 @@ class ValidationMetrics:
     invalid_records: int = 0
     file_errors: int = 0
     incomplete_files: int = 0
+    normalized_fields: int = 0
     drift_counts: Counter[str] = field(default_factory=Counter)
     error_counts: Counter[str] = field(default_factory=Counter)
     source_counts: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -158,6 +161,7 @@ class ValidationMetrics:
                 self.valid_records += 1
             else:
                 self.invalid_records += 1
+        self.normalized_fields += len(result.normalized_fields)
         for issue in result.issues:
             self.error_counts[issue.code] += 1
             if issue.category in _SCHEMA_DRIFT_CATEGORIES:
@@ -170,6 +174,7 @@ class ValidationMetrics:
             "invalid_records": self.invalid_records,
             "file_errors": self.file_errors,
             "incomplete_files": self.incomplete_files,
+            "normalized_fields": self.normalized_fields,
             "drift_counts": dict(sorted(self.drift_counts.items())),
             "error_counts": dict(sorted(self.error_counts.items())),
             "source_counts": {
@@ -411,24 +416,50 @@ def _configured_constraint_issues(
     return tuple(issues)
 
 
+def _transform_issues(
+    failures: tuple[TransformFailure, ...],
+) -> tuple[ValidationIssue, ...]:
+    return tuple(
+        ValidationIssue(
+            code="transform_failed",
+            category=DriftCategory.VALUE_CONSTRAINT,
+            message=f"{failure.field}: the {failure.rule} transform failed: {failure.message}",
+            location=(failure.field,),
+            input_value=_to_json_safe(failure.input_value),
+        )
+        for failure in failures
+    )
+
+
 def validate_record_value(
     value: Any,
     *,
     model: type[BaseModel] = FinancialTransaction,
     constraints: ValidationConstraints | None = None,
-) -> tuple[BaseModel | None, tuple[ValidationIssue, ...]]:
-    """Validate one candidate value using the same schema and rules as ingestion."""
+    transforms: Mapping[str, tuple[TransformRule, ...]] | None = None,
+) -> tuple[BaseModel | None, tuple[ValidationIssue, ...], tuple[str, ...]]:
+    """Validate one candidate value using the same schema and rules as ingestion.
 
+    The returned field names are the fields whose values the configured
+    transforms changed on this record; they are empty when no transform ran or
+    validation failed.
+    """
+
+    normalized_fields: tuple[str, ...] = ()
+    if transforms:
+        value, normalized_fields, failures = normalize_record(value, transforms)
+        if failures:
+            return None, _transform_issues(failures), ()
     try:
         record = model.__pydantic_validator__.validate_python(value)
     except ValidationError as exc:
-        return None, _validation_issues(exc)
+        return None, _validation_issues(exc), ()
     if constraints is not None and not isinstance(record, FinancialTransaction):
         raise TypeError("business constraints are only supported by the built-in schema")
     issues = _configured_constraint_issues(record, constraints)
     if issues:
-        return None, issues
-    return record, ()
+        return None, issues, ()
+    return record, (), normalized_fields
 
 
 def _validate_input(
@@ -436,13 +467,14 @@ def _validate_input(
     constraints: ValidationConstraints | None = None,
     source_labeler: Callable[[str], str] | None = None,
     model: type[BaseModel] = FinancialTransaction,
+    transforms: Mapping[str, tuple[TransformRule, ...]] | None = None,
 ) -> MigrationRecordResult:
     if item.issue is not None:
         return _source_result(item)
 
     try:
-        transaction, issues = validate_record_value(
-            item.value, model=model, constraints=constraints
+        transaction, issues, normalized_fields = validate_record_value(
+            item.value, model=model, constraints=constraints, transforms=transforms
         )
     except Exception as exc:
         source = source_labeler(item.source) if source_labeler else item.source
@@ -480,6 +512,7 @@ def _validate_input(
         raw_record=item.value,
         transaction=transaction if not issues else None,
         issues=issues,
+        normalized_fields=normalized_fields,
     )
 
 
@@ -490,6 +523,7 @@ def iter_validated_records(
     constraints: ValidationConstraints | None = None,
     source_labeler: Callable[[str], str] | None = None,
     model: type[BaseModel] = FinancialTransaction,
+    transforms: Mapping[str, tuple[TransformRule, ...]] | None = None,
     excluded_paths: Iterable[str | Path] = (),
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
@@ -523,7 +557,7 @@ def iter_validated_records(
             try:
                 for item in records:
                     result = _validate_input(
-                        item, constraints, source_labeler, model
+                        item, constraints, source_labeler, model, transforms
                     )
                     if not result.is_valid:
                         if logged_errors < _MAX_LOGGED_RECORD_ERRORS:

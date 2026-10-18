@@ -78,6 +78,7 @@ def build_run_summary(
         "invalid": data["invalid_records"],
         "file_errors": data["file_errors"],
         "incomplete_files": data["incomplete_files"],
+        "normalized_fields": data["normalized_fields"],
         "resumed_records": resumed_records,
     }
     if sample_limit is not None:

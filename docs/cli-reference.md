@@ -165,6 +165,18 @@ A layout has `version: 1`, a Python-style `model_name`, an `id_field`, and a `fi
 
 Unknown field options and invalid combinations fail before input processing.
 
+### Normalizing field values
+
+A field may declare a `transforms` list. Rules run in listed order before validation, and only on string values; other types pass through untouched. A value a rule cannot convert rejects the record with a `transform_failed` issue that names the field and the rule.
+
+- `{"trim": true}` strips surrounding whitespace. Use it when `strip_whitespace` is `false`.
+- `{"lowercase": true}` and `{"uppercase": true}` fold case, including on enum fields so folded values can match the declared choices.
+- `{"datetime": "%d/%m/%Y"}` parses a `date` or `datetime` field with an explicit `strptime` pattern and writes ISO 8601. A pattern with time directives needs a `datetime` field and writes a timestamp; a date-only pattern writes `YYYY-MM-DD`.
+- `{"decimal": {"dot": false, "places": 2}}` reads decimal text, treats the selected character as the decimal separator (the other one must group digits in threes), rounds half up to `places` decimal places when given, and writes plain dot-separated text. `dot` defaults to `true`; `places` is optional.
+- `{"alias": {"n/a": "HIGH"}}` maps exact source values to declared enum choices. Unmapped values pass through and are validated against the enum as usual.
+
+Transforms are declared normalization, not automatic coercion: a value no rule converts still fails instead of being guessed. Rules feed the schema fingerprint, so editing them targets a new table and a new resume namespace, and `verify` re-applies the same rules before comparing digests. The run summary counts each changed field value under `records.normalized_fields`.
+
 ### Drafting a layout from data
 
 `airlock-db infer` writes a starter layout from the records themselves:
