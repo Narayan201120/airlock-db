@@ -1,11 +1,12 @@
-"""Reconcile a committed target database against the records a run accepted.
+"""Reconcile a committed target against the records a run accepted.
 
 ``airlock-db verify --input PATH --output-dir DIR`` re-reads the same sources
 with the same schema, rebuilds every stored row with the migration's own row
 builder, and compares one digest per record against the committed SQLite
-target, which is opened read-only. Changed, missing, and unexpected rows are
-reported with bounded samples, so a handoff can be checked without the
-repository scripts.
+target, which is opened read-only. When the database is absent but
+``target_migration.jsonl`` is present, the JSONL target is verified the same
+way. Changed, missing, and unexpected rows are reported with bounded samples,
+so a handoff can be checked without the repository scripts.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from ._version import __version__
 VERIFY_FORMAT = "airlock-db-target-verification"
 _DEFAULT_LIMIT_SAMPLES = 10
 _DEFAULT_TARGET_DATABASE = "target_migration.db"
+_DEFAULT_JSONL_TARGET = "target_migration.jsonl"
 _SUMMARY_FILENAME = "airlock_summary.json"
 _REPORT_FILENAME = "airlock_verify.json"
 
@@ -250,12 +252,6 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         )
     anonymized = args.anonymized or recorded_anonymized
 
-    if not database_path.is_file():
-        return _fail(
-            f"no target database at {database_path}; nothing to verify "
-            "(JSONL-only runs are not supported)"
-        )
-
     if dynamic_schema is None:
         table_name = TRANSACTION_TABLE
         column_names: tuple[str, ...] = TRANSACTION_COLUMNS
@@ -280,6 +276,250 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         for index, name in enumerate(column_names)
         if name not in excluded_fields
     )
+
+    if not database_path.is_file():
+        jsonl_path = output_directory / _DEFAULT_JSONL_TARGET
+        if not jsonl_path.is_file():
+            return _fail(
+                f"no target database at {database_path} and no "
+                f"{_DEFAULT_JSONL_TARGET} in {output_directory}; nothing to verify"
+            )
+        # JSONL-only target. The file holds every accepted record in input
+        # order, serialized as the model's JSON dump. The recorded conflict
+        # policy picks which duplicate id represents it, exactly as SQLite
+        # storage does, and the digest covers the non-anonymized fields.
+        ledger = sqlite3.connect(":memory:")
+        try:
+            ledger.execute("PRAGMA journal_mode = OFF")
+            ledger.execute("PRAGMA synchronous = OFF")
+            ledger.execute(
+                "CREATE TABLE expected (id TEXT PRIMARY KEY, digest TEXT NOT NULL)"
+            )
+            ledger.execute(
+                "CREATE TABLE stored (id TEXT PRIMARY KEY, digest TEXT NOT NULL)"
+            )
+            insert_sql = (
+                "INSERT OR IGNORE INTO {table} (id, digest) VALUES (?, ?)"
+                if policy == "skip"
+                else "INSERT OR REPLACE INTO {table} (id, digest) VALUES (?, ?)"
+            )
+            insert_expected = insert_sql.format(table="expected")
+            insert_stored = insert_sql.format(table="stored")
+            accepted = 0
+            try:
+                for result in iter_validated_records(
+                    sources,
+                    constraints=constraints,
+                    model=dynamic_schema.model if dynamic_schema else FinancialTransaction,
+                    transforms=(
+                        dynamic_schema.transforms if dynamic_schema is not None else None
+                    ),
+                    csv_delimiter=args.csv_delimiter,
+                    csv_encoding=args.csv_encoding,
+                    fixed_width=fixed_width_layout,
+                ):
+                    record = result.transaction
+                    if record is None:
+                        continue
+                    accepted += 1
+                    dumped = record.model_dump(mode="json")
+                    values = [dumped[name] for name in column_names]
+                    ledger.execute(
+                        insert_expected,
+                        (
+                            str(values[id_index]),
+                            _row_digest([values[index] for index in kept_indices]),
+                        ),
+                    )
+            except KeyboardInterrupt:
+                return _fail("interrupted before the check completed")
+
+            expected_count = ledger.execute(
+                "SELECT COUNT(*) FROM expected"
+            ).fetchone()[0]
+            collapsed = accepted - expected_count
+
+            stored = 0
+            try:
+                stream = jsonl_path.open("r", encoding="utf-8")
+            except OSError as exc:
+                return _fail(f"cannot open {jsonl_path}: {exc}")
+            with stream:
+                for line_number, line in enumerate(stream, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        loaded = json.loads(line)
+                    except ValueError as exc:
+                        return _fail(
+                            f"cannot parse {jsonl_path} line {line_number}: {exc}"
+                        )
+                    if not isinstance(loaded, dict):
+                        return _fail(
+                            f"cannot parse {jsonl_path} line {line_number}: "
+                            "each line must be a JSON object"
+                        )
+                    stored += 1
+                    values = [loaded.get(name) for name in column_names]
+                    ledger.execute(
+                        insert_stored,
+                        (
+                            str(values[id_index]),
+                            _row_digest([values[index] for index in kept_indices]),
+                        ),
+                    )
+            stored_ids = ledger.execute("SELECT COUNT(*) FROM stored").fetchone()[0]
+            collapsed_stored = stored - stored_ids
+
+            matched = ledger.execute(
+                "SELECT COUNT(*) FROM expected AS e JOIN stored AS s ON e.id = s.id "
+                "WHERE e.digest = s.digest"
+            ).fetchone()[0]
+            changed = ledger.execute(
+                "SELECT COUNT(*) FROM expected AS e JOIN stored AS s ON e.id = s.id "
+                "WHERE e.digest <> s.digest"
+            ).fetchone()[0]
+            missing = ledger.execute(
+                "SELECT COUNT(*) FROM expected WHERE id NOT IN (SELECT id FROM stored)"
+            ).fetchone()[0]
+            unexpected = ledger.execute(
+                "SELECT COUNT(*) FROM stored WHERE id NOT IN (SELECT id FROM expected)"
+            ).fetchone()[0]
+            changed_samples = [
+                {
+                    "id": row[0],
+                    "expected_digest": row[1][:16],
+                    "stored_digest": row[2][:16],
+                }
+                for row in ledger.execute(
+                    "SELECT e.id, e.digest, s.digest FROM expected AS e "
+                    "JOIN stored AS s ON e.id = s.id "
+                    "WHERE e.digest <> s.digest ORDER BY e.id LIMIT ?",
+                    (_DEFAULT_LIMIT_SAMPLES,),
+                )
+            ]
+            missing_samples = [
+                {"id": row[0]}
+                for row in ledger.execute(
+                    "SELECT id FROM expected WHERE id NOT IN (SELECT id FROM stored) "
+                    "ORDER BY id LIMIT ?",
+                    (_DEFAULT_LIMIT_SAMPLES,),
+                )
+            ]
+            unexpected_samples = [
+                {"id": row[0]}
+                for row in ledger.execute(
+                    "SELECT id FROM stored WHERE id NOT IN (SELECT id FROM expected) "
+                    "ORDER BY id LIMIT ?",
+                    (_DEFAULT_LIMIT_SAMPLES,),
+                )
+            ]
+        finally:
+            ledger.close()
+
+        consistent = changed == 0 and missing == 0 and unexpected == 0
+
+        print(f"Verification target: {jsonl_path} (JSONL target)")
+        print(
+            f"Sources: {len(inputs)} file or directory path(s), "
+            f"{len(database_sources)} SQLite database(s)"
+        )
+        if summary is not None:
+            records = summary.get("records") or {}
+            storage = summary.get("storage") or {}
+            print(
+                "Run summary: "
+                f"{records.get('valid')} valid, {records.get('invalid')} invalid; "
+                f"JSONL rows {storage.get('jsonl_rows')}"
+            )
+        print(
+            f"Accepted records: {accepted} "
+            f"(distinct ids {expected_count}, collapsed by {policy}: {collapsed})"
+        )
+        print(
+            f"Target rows: {stored} "
+            f"(distinct ids {stored_ids}, collapsed by {policy}: {collapsed_stored})"
+        )
+        if excluded_fields:
+            print(f"Excluded from digests (anonymized): {', '.join(excluded_fields)}")
+        print(
+            f"Matched: {matched}; changed: {changed}; missing: {missing}; "
+            f"unexpected: {unexpected}"
+        )
+        if changed_samples:
+            print(f"Changed rows (showing first {len(changed_samples)} of {changed}):")
+            for sample in changed_samples:
+                print(
+                    f"  - {sample['id']} (expected {sample['expected_digest']}, "
+                    f"stored {sample['stored_digest']})"
+                )
+        if missing_samples:
+            print(f"Missing rows (showing first {len(missing_samples)} of {missing}):")
+            for sample in missing_samples:
+                print(f"  - {sample['id']}")
+        if unexpected_samples:
+            print(
+                f"Unexpected stored rows (showing first {len(unexpected_samples)} "
+                f"of {unexpected}):"
+            )
+            for sample in unexpected_samples:
+                print(f"  - {sample['id']}")
+        if consistent:
+            print("Verification: consistent")
+        else:
+            print(
+                f"Verification: mismatch (changed {changed}, missing {missing}, "
+                f"unexpected {unexpected})"
+            )
+            if changed and not anonymized:
+                print(
+                    "Hint: if the original run used --anonymize and no summary exists, "
+                    "pass --anonymized"
+                )
+
+        report = {
+            "format": VERIFY_FORMAT,
+            "version": 1,
+            "airlock_version": __version__,
+            "generated_at": _timestamp(),
+            "status": "consistent" if consistent else "mismatch",
+            "target": {"jsonl": str(jsonl_path)},
+            "conflict_policy": policy,
+            "anonymized": anonymized,
+            "excluded_fields": list(excluded_fields),
+            "records": {
+                "accepted": accepted,
+                "distinct_ids": expected_count,
+                "collapsed": collapsed,
+                "stored": stored,
+                "stored_ids": stored_ids,
+                "collapsed_stored": collapsed_stored,
+                "matched": matched,
+                "changed": changed,
+                "missing": missing,
+                "unexpected": unexpected,
+            },
+            "samples": {
+                "changed": changed_samples,
+                "missing": missing_samples,
+                "unexpected": unexpected_samples,
+            },
+        }
+        report_path = output_directory / _REPORT_FILENAME
+        try:
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(
+                f"airlock-db verify: warning: could not write {report_path}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Verification report: {report_path}")
+        return 0 if consistent else 1
 
     select_columns = ", ".join(quote_identifier(name) for name in column_names)
     quoted_table = quote_identifier(table_name)

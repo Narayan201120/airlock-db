@@ -114,12 +114,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: one record layout per file, no record-type branching. A short line becomes a per-row `fixed_width_short_line` issue instead of a crash. The flag routes archive members and directory scans, and it threads through `verify` and `infer`.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_fixed_width.py` migrates a fixed-width twin of a delimited fixture and requires identical stored rows and counts (3/3/0), a passing `verify` and a failing one without the flag, identical records through a directory scan, a gzip layer, and a zip member whose `.dat` suffix is otherwise unsupported, a cp1252 layout that keeps a `Müller & Söhne GmbH` counterparty while an all-padding span becomes null, one short line in a three-row file rejecting exactly that row with `fixed_width_short_line`, three fail-fast layout errors that write no summary, and an `infer` draft that then migrates the same file (9 scenarios). Wired into CI.
 
-### 17. Verification for JSONL targets
+### 17. Verification for JSONL targets (shipped)
 
 - What: `verify` accepts a JSONL-only run. When the database is absent and `target_migration.jsonl` is present, accepted records are rebuilt from the sources exactly as the SQLite path does and compared per record against the file, which is read only.
 - Why: JSONL is a full handoff format here, and it is the one output `verify` refuses today.
 - Scope: the same duplicate and conflict-policy semantics as the SQLite path, the same exit codes, and an `airlock_verify.json` whose `target` block names the checked file. No sidecar digests; the JSONL rows stay canonical.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py` requires an untouched target to verify, then requires altered, deleted, and extra rows to fail with matching counts under both `skip` and `replace`. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py` migrates a fixture to a JSONL-only target and requires the untouched file to verify (4 matched, exit 0) before requiring an altered row (changed 1), a deleted row (missing 1), an appended row (unexpected 1), and a corrupt line (exit 1 with its line number) to fail with exactly those counts; a duplicate-id fixture proves the recorded policy with altered and deleted duplicates landing differently under `skip` and `replace`; anonymized fields stay out of the digests while a changed business field still fails; a two-target run verifies its database; and a missing target fails with `nothing to verify`. The report's `target` block names the checked file (10 scenarios). Wired into CI.
 
 ### 18. Audit manifest in the run summary
 

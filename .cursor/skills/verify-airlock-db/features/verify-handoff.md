@@ -19,7 +19,7 @@ Expected result: `verify_handoff_ok scenarios=10 evidence=...`.
 - Duplicate keys follow the recorded policy: `skip` keeps the first occurrence, `replace` keeps the last. The policy comes from `--conflict-policy` or from `airlock_summary.json`, and a mismatch between the two prints a warning.
 - An anonymized run keeps its anonymized fields out of the digests, because the tokens use a run-scoped key that is never stored. Everything else in the row must still match.
 - Exit code `0` means consistent; `1` means changed, missing, or unexpected rows, or a missing target database; `2` means the flags or files themselves are wrong.
-- JSONL-only runs have no target database and are refused with a clear message.
+- A JSONL-only run is verified through `target_migration.jsonl`: each line is read as the model's JSON dump, duplicate ids follow the recorded policy, and the `target` block of `airlock_verify.json` names the checked file. A corrupt line fails with its line number.
 
 ## Manual check
 

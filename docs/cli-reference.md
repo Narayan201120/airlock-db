@@ -232,9 +232,11 @@ python main.py verify --input legacy/tickets.json --config schema_draft.yaml --o
 
 The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--fixed-width`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
 
+When the database is absent but `target_migration.jsonl` is present, the file is verified the same way: each line is read as the model's JSON dump, and the `target` block in `airlock_verify.json` names the checked file. A two-target run verifies its database, which is canonical.
+
 Duplicate keys follow the recorded policy: `skip` keeps the first occurrence, `replace` keeps the last. `--conflict-policy` overrides the policy recorded in `airlock_summary.json`, and a disagreement prints a warning. For anonymized runs the anonymized fields are excluded from the digests, because the tokens use a run-scoped key that is never stored; `--anonymized` forces that behavior when the summary is missing.
 
-Exit codes: `0` consistent, `1` mismatch or a missing target database, `2` bad flags or configuration files. JSONL-only runs have no target database and are refused.
+Exit codes: `0` consistent, `1` mismatch or a missing target, `2` bad flags or configuration files.
 
 ## Validation and report behavior
 

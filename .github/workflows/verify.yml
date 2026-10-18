@@ -86,6 +86,9 @@ jobs:
       - name: Target verification
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_handoff.py ci-handoff
+      - name: JSONL target verification
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py ci-jsonl-verify
       - name: Multi-table source database
         run: |
           python - <<'PY'
