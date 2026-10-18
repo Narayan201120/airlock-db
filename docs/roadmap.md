@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, richer reports, compressed inputs, schema inference, target verification, preview runs and SQL source queries, and a memory soak at 1M rows. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV and archives, multi-table and custom-query source databases, schema inference, target verification, repair resume, scripted decisions with report refresh, preview runs, checkpoint/resume, XML equivalence, and a reduced memory soak) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
+Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, richer reports, compressed inputs, schema inference, target verification, preview runs and SQL source queries, and a memory soak at 1M rows. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV and archives, multi-table and custom-query source databases, schema inference, target verification, repair resume, scripted decisions with report refresh, preview runs, checkpoint/resume, XML equivalence, and a reduced memory soak) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release. Tier 5 is planned for v0.4.0, and each item lands as its own verified commit.
 
 ## Ground rules
 
@@ -73,30 +73,95 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - What: read `.gz` files and `.zip` archives directly, streaming members through the same bounded readers. No extraction to disk and no nesting: one `.gz` layer over a supported suffix, or a flat zip of supported members.
 - Why: air-gapped handoffs arrive as archives. Extracting them first writes unvalidated PII to disk.
 - Scope: the same suffix list and size limits apply to the uncompressed content. Unsupported members are skipped, and a bad archive is a source error, not a crash.
-- Verification: `scripts/verify_archive_input.py` builds gzip and zip twins of a checked fixture, migrates them, and requires stored rows and counts identical to the plain-file run. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_archive_input.py` builds gzip and zip twins of a checked fixture, migrates them, and requires stored rows and counts identical to the plain-file run. Wired into CI.
 
 ### 11. Schema inference command
 
 - What: `airlock-db infer --input FILE` writes a draft dynamic-schema config from observed records. Inferred types are conservative, and the draft marks fields whose values conflict.
 - Why: writing a client schema by hand is the slowest step for a new legacy layout.
-- Verification: `scripts/verify_schema_infer.py` drafts a layout from the real-data sample and the messy fixture, migrates each source with its own draft, and requires the predicted outcome: zero invalid records for the clean sample, and failures only on the rows the draft flagged. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_schema_infer.py` drafts a layout from the real-data sample and the messy fixture, migrates each source with its own draft, and requires the predicted outcome: zero invalid records for the clean sample, and failures only on the rows the draft flagged. Wired into CI.
 
 ### 12. Verification command
 
 - What: `airlock-db verify --input ... --output-dir DIR` reconciles the committed target database against the records the run accepted: counts plus per-record digests.
 - Why: operators need a handoff check that does not depend on the repository scripts.
-- Verification: `scripts/verify_handoff.py` runs real migrations and requires an untouched target to verify, then requires changed, deleted, inserted, re-policied, and re-edited-source variants to fail with the matching counts. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_handoff.py` runs real migrations and requires an untouched target to verify, then requires changed, deleted, inserted, re-policied, and re-edited-source variants to fail with the matching counts. Wired into CI.
 
 ### 13. Small CLI wins
 
 - What: `repair --emit-decisions` writes a decisions template for the error log, `--sample N` bounds a run for a quick previewing pass, and `--source-query SQL` reads a custom SELECT from a source database.
-- Verification: `scripts/verify_cli_wins.py` drives all three through the real CLI: sampled runs stop at the requested count and mark themselves as previews, queries filter, verify, and are refused when malformed, and an emitted template stays inert until a line is edited. Wired into CI beside the repair and source-database steps.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_cli_wins.py` drives all three through the real CLI: sampled runs stop at the requested count and mark themselves as previews, queries filter, verify, and are refused when malformed, and an emitted template stays inert until a line is edited. Wired into CI beside the repair and source-database steps.
 
 ### 14. Scale proof
 
 - What: a scripted 1M-row soak run that records wall time and peak memory, plus a reduced variant in CI.
 - Why: prove the streaming story at scale before the input surface grows again.
 - Verification: `scripts/soak_migration.py` migrated 1,000,000 rows in 37 s at 26.8k records/s with a 40.7 MiB peak, flat from 20,000 rows (39.3 MiB) and 100,000 rows (40.9 MiB), while asserting stored rows and summary counts and holding a 300 MiB ceiling. CI runs the 100,000-row variant on Linux.
+
+## Tier 5: planned (target v0.4.0)
+
+### 15. Normalization rules in dynamic schema configs
+
+- What: an optional `transforms` list per field in JSON and YAML schema configs. Stdlib-only rules run in listed order before validation: trim whitespace, fold case, parse a datetime with an explicit strptime pattern into ISO 8601, normalize decimal text with a places bound, and map enum aliases to canonical values. A value a rule cannot convert is rejected with a `transform_failed` reason that names the field and the rule.
+- Why: legacy exports carry padded, mixed-case, and locale-formatted values that are fixable on the spot. Today a `31/12/2025` date rejects the row and pushes it into per-row repair.
+- Scope: dynamic schema configs only; the built-in financial model keeps its current strictness. Transforms feed the schema fingerprint and `verify` re-applies them, so digests stay comparable. The summary gains a normalized-fields count.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_transforms.py` migrates a fixture with dirty dates, decimals, and enum aliases, requires the exact stored values, requires unconvertible values to fail with the transform named, and requires an untouched run to verify. Wired into CI.
+
+### 16. Fixed-width positional input
+
+- What: `--fixed-width PATH` points to a small JSON or YAML layout: an encoding, an optional skip count for banner lines, and one entry per field with a 1-based start and a length. Values stream through the same validation as every other reader. Overlapping spans, out-of-order spans, and duplicate names fail before the run starts.
+- Why: mainframe and Cobol handoffs arrive as undelimited text. Today they are rejected as unsupported files.
+- Scope: one record layout per file, no record-type branching. A short line becomes a per-row `fixed_width_short_line` issue instead of a crash. The flag routes archive members and directory scans, and it threads through `verify` and `infer`.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_fixed_width.py` builds a fixed-width twin of a checked fixture, migrates it, and requires stored rows and counts identical to the delimited twin; then requires a short line and a bad span spec to fail as designed. Wired into CI.
+
+### 17. Verification for JSONL targets
+
+- What: `verify` accepts a JSONL-only run. When the database is absent and `target_migration.jsonl` is present, accepted records are rebuilt from the sources exactly as the SQLite path does and compared per record against the file, which is read only.
+- Why: JSONL is a full handoff format here, and it is the one output `verify` refuses today.
+- Scope: the same duplicate and conflict-policy semantics as the SQLite path, the same exit codes, and an `airlock_verify.json` whose `target` block names the checked file. No sidecar digests; the JSONL rows stay canonical.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py` requires an untouched target to verify, then requires altered, deleted, and extra rows to fail with matching counts under both `skip` and `replace`. Wired into CI.
+
+### 18. Audit manifest in the run summary
+
+- What: `airlock_summary.json` records a `source_manifest` with one entry per expanded source file: label, size, and SHA-256, beside the version and schema fingerprint it already carries. `verify` re-reads each source, hashes it in bounded chunks, and compares size and digest against the manifest.
+- Why: a handoff should prove which bytes the run validated. A swapped file of the same shape passes `verify` silently today.
+- Scope: one streaming read per source, no second pass and no unbounded memory. Anonymized runs keep labels only. A summary without a manifest keeps verifying with a notice.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_source_manifest.py` requires the manifest to match an independent hash, requires a same-size swapped source to fail `verify` with the file named, and requires both an untouched copy and an old summary to pass. Wired into CI.
+
+### 19. Decisions dry-run
+
+- What: `repair --decisions FILE --dry-run` parses and evaluates the file, prints one line per entry with the planned outcome, and exits without writing to the database, the checkpoints, or the repair log. It requires `--decisions`.
+- Why: scripted fixes are all or nothing today. The first staged change opens the store and commits, so a typo in one line writes the other rows first.
+- Scope: the same parsing, validation, and fingerprint checks as a live run. Exit 0 when every entry would apply, 1 when an entry would fail validation, 2 for parse errors and log mismatches. Output follows the `--sample` notice convention.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_decisions_dry_run.py` requires a dry-run to leave the database, checkpoints, and log untouched, then applies the same file for real and requires the predicted counts to match. Wired into CI.
+
+### 20. Input encoding override
+
+- What: `--input-encoding NAME` sets the text encoding for readers that currently hard-code `utf-8-sig`: the JSON reader, the JSONL byte parser, and the line-based TSV and header readers. `--csv-encoding` remains for CSV.
+- Why: air-gapped exports are frequently cp1252 or latin-1. Today they fail with an `encoding_error` even though the data is readable.
+- Scope: XML stays declaration-driven by design. The flag threads through `verify` and `infer` beside the existing CSV options.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py` migrates a cp1252 fixture with the flag and requires clean counts, then requires the same file to fail without it. Wired into CI.
+
+### 21. Run-to-run comparison
+
+- What: `airlock-db report --output-dir DIR --compare OTHER_DIR` adds a delta section to the rebuilt report: record-count changes, issue categories that appeared or disappeared, and per-source changes. It reads the two `airlock_summary.json` files only.
+- Why: after a repair pass the interesting number is what changed since the previous run, not the absolute count.
+- Scope: no database reads, no new files, one self-contained report. A category that did not exist before is shown as new, not as a percentage.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_run_compare.py` runs two migrations over mutated fixtures and requires the delta section to show the exact fixed and new counts, twice, proving determinism. Wired into CI.
+
+### 22. Constraints for dynamic schemas
+
+- What: a `field_rules` block in the constraints file extends business rules beyond the built-in model: per-field enum sets, numeric ranges, regex patterns, and required-any-of groups. Rules run after validation on dynamic records, each with its own reason: `constraint_enum`, `constraint_range`, `constraint_pattern`, `constraint_required_any_of`.
+- Why: client layouts deserve the same guards the built-in model gets. Today `--constraints` refuses anything but the built-in schema.
+- Scope: declarative JSON only; the built-in keys stay as they are. The fingerprint covers the full parsed file in canonical key order, so repair resume keeps working.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dynamic_constraints.py` runs a dynamic migration with the rules and requires exactly the predicted rejections per reason, then requires a resumed repair session to accept the same fingerprint. Wired into CI.
+
+### 23. Air-gap deployment kit
+
+- What: `scripts/check_wheelhouse.py` inspects an offline wheelhouse directory and confirms it covers `airlock-db` and its dependencies from wheel filenames and metadata, then writes an install manifest with sizes and hashes. `docs/deployment.md` documents the two-machine transfer: stage on a connected machine, verify, move, install with `--no-index`.
+- Why: the install story is one README paragraph today. A kit that is checked before the jump and written down removes the guesswork.
+- Scope: the checker is fully offline and reads the directory only. The single network step is the documented, user-run `pip download` on the connected side.
+- Verification: a CI step builds a wheelhouse with `pip download`, runs the checker, installs from it into a clean venv with `--no-index`, and runs one migration. Ubuntu-only, mirroring the soak step. Wired into CI.
 
 ## Explicitly out of scope
 
@@ -106,4 +171,4 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 
 ## Sequencing
 
-Items 1 and 2 are small and pay off immediately. Item 3 unlocks item 4, which closes the repair-versus-report gap. Items 5 and 6 deepen the two operational stories: repair and legacy databases. Tier 3 items start only when a concrete use case arrives.
+Items 1 and 2 are small and pay off immediately. Item 3 unlocks item 4, which closes the repair-versus-report gap. Items 5 and 6 deepen the two operational stories: repair and legacy databases. Tier 5 runs in the picked order: normalization rules, fixed-width input, JSONL verification, the audit manifest, and decisions dry-run first; then the input encoding override, run comparison, dynamic constraints, and the deployment kit. Each item stands alone and lands as its own verified commit.
