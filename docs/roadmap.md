@@ -128,12 +128,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: each source file gets one streaming hash read in bounded chunks, beside the read the run already does; memory stays flat regardless of file size. Anonymized runs keep labels only. A summary without a manifest keeps verifying with a notice.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_source_manifest.py` requires each recorded entry to match an independent SHA-256 and the file's size, and requires a same-size swapped source to fail `verify` with the file named while every row still matches. A deleted source and an added file land in the manifest report, an untouched copy passes, an old summary passes with a skip notice, and an anonymized run keeps labels only (9 scenarios). Wired into CI.
 
-### 19. Decisions dry-run
+### 19. Decisions dry-run (shipped)
 
 - What: `repair --decisions FILE --dry-run` parses and evaluates the file, prints one line per entry with the planned outcome, and exits without writing to the database, the checkpoints, or the repair log. It requires `--decisions`.
 - Why: scripted fixes are all or nothing today. The first staged change opens the store and commits, so a typo in one line writes the other rows first.
 - Scope: the same parsing, validation, and fingerprint checks as a live run. Exit 0 when every entry would apply, 1 when an entry would fail validation, 2 for parse errors and log mismatches. Output follows the `--sample` notice convention.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_decisions_dry_run.py` requires a dry-run to leave the database, checkpoints, and log untouched, then applies the same file for real and requires the predicted counts to match. Wired into CI.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_decisions_dry_run.py` requires a dry-run to leave the database, the checkpoints, and the repair log byte-identical while predicting one outcome per entry (2 correct, 1 drop, 1 skip, and an unused entry ignored), applies the same file for real and requires the predicted counts (2 corrected, 1 dropped, 3 decisions saved, 2 rows added), reports the saved entries as ignored on a second dry-run, and requires a decision that would fail validation (exit 1) and parse errors and a missing `--decisions` (exit 2) to write nothing (5 scenarios). Wired into CI.
 
 ### 20. Input encoding override
 

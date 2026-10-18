@@ -11,7 +11,7 @@ import sys
 import tempfile
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from pydantic import BaseModel
 
@@ -71,6 +71,11 @@ def _build_repair_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conflict-policy", choices=("skip", "replace"), default="skip")
     parser.add_argument("--anonymize", action="store_true", help="pseudonymize configured sensitive fields before storage")
     parser.add_argument("--decisions", metavar="PATH", help="apply a JSONL decisions file instead of an interactive session")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="with --decisions: print the planned outcome of every entry without writing anything",
+    )
     parser.add_argument(
         "--emit-decisions",
         metavar="PATH",
@@ -247,11 +252,174 @@ def _trace_for_retry(issues: Sequence[ValidationIssue]) -> list[dict[str, Any]]:
     return [issue.to_dict() for issue in issues]
 
 
+def _decision_candidate(
+    entry_number: int,
+    decision: Mapping[str, Any],
+    base_candidate: Any,
+) -> dict[str, Any]:
+    """Build the record one decision would apply to, or raise ValueError."""
+
+    action = decision["action"]
+    if action == "set":
+        if not isinstance(base_candidate, dict):
+            raise ValueError(
+                f"decisions entry {entry_number}: rejected record is not an object"
+            )
+        candidate = dict(base_candidate)
+        candidate[decision["field"]] = decision["value"]
+        return candidate
+    if action == "remove":
+        if not isinstance(base_candidate, dict):
+            raise ValueError(
+                f"decisions entry {entry_number}: rejected record is not an object"
+            )
+        candidate = dict(base_candidate)
+        field_name = decision["field"]
+        if field_name not in candidate:
+            raise ValueError(
+                f"decisions entry {entry_number}: field {field_name!r} is not present"
+            )
+        del candidate[field_name]
+        return candidate
+    if action == "edit":
+        candidate = decision["record"]
+        if not isinstance(candidate, dict):
+            raise ValueError(
+                f"decisions entry {entry_number}: record must be a JSON object"
+            )
+        return dict(candidate)
+    raise ValueError(f"decisions entry {entry_number}: unknown action {action!r}")
+
+
+def _preview_decisions(
+    *,
+    decisions_by_entry: Mapping[int, Mapping[str, Any]],
+    reader: RepairLogReader,
+    progress_reader: RepairProgressReader,
+    first_progress: tuple[int, str] | None,
+    validated_trailer: Mapping[str, Any],
+    model: type[BaseModel],
+    constraints: ValidationConstraints | None,
+    dynamic_schema: DynamicSchema | None,
+    anonymizer: RunAnonymizer | None,
+    display_log_path: str | Path,
+    display_database_path: str | Path,
+    schema_name: str,
+) -> int:
+    """Evaluate every decision against the log and write nothing.
+
+    Mirrors the live scripted path: resumed entries come first, then
+    non-repairable entries, then the decision itself. Returns 0 when every
+    decision would apply, 1 when one would fail validation, and 2 when the
+    repair progress does not line up with the log.
+    """
+
+    print(f"Repair log: {display_log_path}")
+    print(f"Schema: {schema_name}; target: {display_database_path}")
+    if not validated_trailer["complete"]:
+        print(
+            "Warning: the source migration did not finish; this log covers only "
+            "its processed records."
+        )
+    if validated_trailer["truncated"]:
+        print(
+            "Warning: the repair log reached its size or record limit; "
+            f"{validated_trailer['omitted_records']} rejected rows were not recorded."
+        )
+
+    next_progress = first_progress
+    seen: set[int] = set()
+    correct = 0
+    dropped = 0
+    skipped = 0
+    failed = 0
+    for entry_number, entry in enumerate(reader, start=1):
+        seen.add(entry_number)
+        if next_progress is not None and next_progress[0] < entry_number:
+            print(
+                "airlock-db repair: repair progress entries are not ordered",
+                file=sys.stderr,
+            )
+            return 2
+        if next_progress is not None and next_progress[0] == entry_number:
+            next_progress = progress_reader.next()
+            print(f"entry {entry_number}: ignored (already saved in SQLite)")
+            continue
+        decision = decisions_by_entry.get(entry_number)
+        if decision is None:
+            continue
+        if not entry["repairable"]:
+            print(
+                f"entry {entry_number}: ignored (the rejected row is not repairable)"
+            )
+            continue
+        action = decision["action"]
+        if action == "skip":
+            skipped += 1
+            print(f"entry {entry_number}: would skip (left unchanged)")
+            continue
+        if action == "drop":
+            dropped += 1
+            print(f"entry {entry_number}: would drop")
+            continue
+        try:
+            candidate = _decision_candidate(entry_number, decision, entry["record"])
+        except ValueError as exc:
+            failed += 1
+            detail = str(exc)
+            prefix = f"decisions entry {entry_number}: "
+            if detail.startswith(prefix):
+                detail = detail[len(prefix) :]
+            print(f"entry {entry_number}: would fail: {detail}")
+            continue
+        try:
+            record, issues, _ = validate_record_value(
+                candidate,
+                model=model,
+                constraints=constraints,
+                transforms=(
+                    dynamic_schema.transforms if dynamic_schema is not None else None
+                ),
+            )
+        except Exception as exc:
+            failed += 1
+            print(f"entry {entry_number}: would fail: {type(exc).__name__}: {exc}")
+            continue
+        if record is None:
+            failed += 1
+            print(f"entry {entry_number}: correction still fails validation")
+            _display_issues(_trace_for_retry(issues), redacted=anonymizer is not None)
+            continue
+        correct += 1
+        field_name = decision.get("field")
+        detail = f" ({action} {field_name})" if field_name else f" ({action})"
+        print(f"entry {entry_number}: would correct{detail}")
+
+    for entry_number in sorted(decisions_by_entry):
+        if entry_number not in seen:
+            print(f"entry {entry_number}: ignored (no matching log entry)")
+
+    applied = correct + dropped + skipped
+    summary = (
+        f"Preview run: {applied} of {len(decisions_by_entry)} decisions would apply "
+        f"({correct} correct, {dropped} drop, {skipped} skip)"
+    )
+    if failed:
+        summary += f"; {failed} would fail validation"
+    summary += "; the database, the checkpoints, and the repair log were not touched."
+    print(summary)
+    return 1 if failed else 0
+
+
 def run_repair(
     args: argparse.Namespace,
     *,
     input_fn: Callable[[str], str] = input,
 ) -> int:
+    if getattr(args, "dry_run", False) and not getattr(args, "decisions", None):
+        print("airlock-db repair: --dry-run requires --decisions", file=sys.stderr)
+        return 2
+
     dynamic_schema: DynamicSchema | None = None
     try:
         if args.config:
@@ -517,6 +685,33 @@ def run_repair(
 
     display_log_path = log_path.name if anonymizer is not None else log_path
     display_database_path = database_path.name if anonymizer is not None else database_path
+    if getattr(args, "dry_run", False):
+        try:
+            return _preview_decisions(
+                decisions_by_entry=decisions_by_entry or {},
+                reader=reader,
+                progress_reader=progress_reader,
+                first_progress=next_progress,
+                validated_trailer=validated_trailer,
+                model=model,
+                constraints=constraints,
+                dynamic_schema=dynamic_schema,
+                anonymizer=anonymizer,
+                display_log_path=display_log_path,
+                display_database_path=display_database_path,
+                schema_name=expected_schema_name,
+            )
+        except (OSError, sqlite3.Error, ValueError, RepairLogError) as exc:
+            details = (
+                type(exc).__name__
+                if anonymizer is not None
+                else f"{type(exc).__name__}: {exc}"
+            )
+            print(f"airlock-db repair: {details}", file=sys.stderr)
+            return 2
+        finally:
+            reader.close()
+            progress_reader.close()
     print(f"Repair log: {display_log_path}")
     print(f"Schema: {expected_schema_name}; target: {display_database_path}")
     print("Each rejected row will be reviewed interactively. Type q to finish this session.")
@@ -630,37 +825,9 @@ def run_repair(
                     staged_decisions += 1
                     dropped += 1
                     continue
-                base_candidate = entry["record"]
-                if action == "set":
-                    if not isinstance(base_candidate, dict):
-                        raise ValueError(
-                            f"decisions entry {entry_number}: rejected record is not an object"
-                        )
-                    candidate = dict(base_candidate)
-                    candidate[decision["field"]] = decision["value"]
-                elif action == "remove":
-                    if not isinstance(base_candidate, dict):
-                        raise ValueError(
-                            f"decisions entry {entry_number}: rejected record is not an object"
-                        )
-                    candidate = dict(base_candidate)
-                    field_name = decision["field"]
-                    if field_name not in candidate:
-                        raise ValueError(
-                            f"decisions entry {entry_number}: field {field_name!r} is not present"
-                        )
-                    del candidate[field_name]
-                elif action == "edit":
-                    candidate = decision["record"]
-                    if not isinstance(candidate, dict):
-                        raise ValueError(
-                            f"decisions entry {entry_number}: record must be a JSON object"
-                        )
-                    candidate = dict(candidate)
-                else:
-                    raise ValueError(
-                        f"decisions entry {entry_number}: unknown action {action!r}"
-                    )
+                candidate = _decision_candidate(
+                    entry_number, decision, entry["record"]
+                )
                 if not _validate_and_stage(candidate, entry_number):
                     raise ValueError("the correction still fails validation")
                 continue

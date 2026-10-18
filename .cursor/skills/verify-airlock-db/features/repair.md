@@ -6,6 +6,7 @@
 - Review and edit rejected records through the `repair` subcommand.
 - Revalidate corrections before committing them to SQLite.
 - Apply scripted decisions non-interactively with `--decisions decisions.jsonl`.
+- Preview a decisions file without writing with `--decisions ... --dry-run`.
 - Rebuild the report after repair with `python main.py report --output-dir DIR`.
 
 ## How to get to it (user POV)
@@ -37,4 +38,5 @@ The corrected row is committed with `counterparty` set to `UNKNOWN`; the dropped
 
 - A non-anonymized sidecar can contain source values. Protect it like the input file.
 - An anonymized migration omits rejected source values, so those entries cannot be repaired from the sidecar.
+- `--dry-run` writes nothing and applies the same parsing, validation, and fingerprint checks as a live run. It exits 0 when every decision would apply, 1 when one would fail validation, and 2 for parse errors or log mismatches.
 - Corrections and progress checkpoints commit together. Re-running a completed repair log skips handled rows.

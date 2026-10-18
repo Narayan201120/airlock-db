@@ -60,6 +60,17 @@ python main.py repair --error-log output/airlock_errors.jsonl --constraints exam
 
 Edit the actions you want and rerun with `--decisions output/decisions.jsonl`. Entries below the log's raw-row limit have nothing to correct, so they are left out of the template and counted in the summary line. The flag refuses to replace an existing file unless `--overwrite` is passed, cannot be combined with `--decisions`, and exits with status 2 when there is nothing to decide, such as an anonymized log.
 
+### Dry-run first
+
+`--dry-run` requires `--decisions` and evaluates the file without writing anything: the database, the checkpoints, and the repair log stay untouched. It prints one line per decision — `would correct`, `would drop`, `would skip`, `ignored`, or `correction still fails validation` — and ends with a preview line:
+
+```powershell
+python main.py repair --error-log output/airlock_errors.jsonl --constraints examples/constraints.json --decisions output/decisions.jsonl --dry-run
+# Preview run: 4 of 5 decisions would apply (2 correct, 1 drop, 1 skip); the database, the checkpoints, and the repair log were not touched.
+```
+
+Exit code `0` means every decision would apply, `1` means at least one would fail validation, and `2` means the file or the flags are wrong. Entries that a live run would ignore — already saved in SQLite, not repairable, or not present in the log — are reported as `ignored` and do not fail the run.
+
 ## Resume and checkpoints
 
 If you stop with `q` and rerun the same log against the same database, completed corrections and drops are skipped. The session reports them as resumed.

@@ -129,6 +129,9 @@ jobs:
           printf '{"entry": 1, "action": "drop"}\n{"entry": 2, "action": "set", "field": "amount", "value": "5.00"}\n{"entry": 3, "action": "set", "field": "status", "value": "POSTED"}\n' > ci-decisions.jsonl
           python main.py repair --error-log ci-decisions/airlock_errors.jsonl --constraints examples/constraints.json --decisions ci-decisions.jsonl
           python main.py report --output-dir ci-decisions | grep -q 'Repair outcomes: 2 corrected, 1 dropped'
+      - name: Decisions dry-run
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_decisions_dry_run.py ci-decisions-dry-run
       - name: XML equivalence
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_xml_equivalence.py \
