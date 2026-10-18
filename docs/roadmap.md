@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, and richer reports. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV, multi-table source database, repair resume, scripted decisions with report refresh, XML equivalence, source-database ingestion, checkpoint/resume) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release. Tier 4 is in progress; each item lands as its own verified commit.
+Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, richer reports, compressed inputs, schema inference, target verification, preview runs and SQL source queries, and a memory soak at 1M rows. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV and archives, multi-table and custom-query source databases, schema inference, target verification, repair resume, scripted decisions with report refresh, preview runs, checkpoint/resume, XML equivalence, and a reduced memory soak) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
 
 ## Ground rules
 
@@ -66,33 +66,33 @@ Current state: v0.2.0 shipped all of Tier 2 and Tier 3: report regeneration and 
 
 - Per-source breakdown table and issue-category grouping using `<details>` only. No JavaScript, by design.
 
-## Tier 4: in progress (target v0.3.0)
+## Tier 4: shipped in v0.3.0
 
-### 10. Compressed inputs (shipped)
+### 10. Compressed inputs
 
 - What: read `.gz` files and `.zip` archives directly, streaming members through the same bounded readers. No extraction to disk and no nesting: one `.gz` layer over a supported suffix, or a flat zip of supported members.
 - Why: air-gapped handoffs arrive as archives. Extracting them first writes unvalidated PII to disk.
 - Scope: the same suffix list and size limits apply to the uncompressed content. Unsupported members are skipped, and a bad archive is a source error, not a crash.
 - Verification: `scripts/verify_archive_input.py` builds gzip and zip twins of a checked fixture, migrates them, and requires stored rows and counts identical to the plain-file run. Wired into CI.
 
-### 11. Schema inference command (shipped)
+### 11. Schema inference command
 
 - What: `airlock-db infer --input FILE` writes a draft dynamic-schema config from observed records. Inferred types are conservative, and the draft marks fields whose values conflict.
 - Why: writing a client schema by hand is the slowest step for a new legacy layout.
 - Verification: `scripts/verify_schema_infer.py` drafts a layout from the real-data sample and the messy fixture, migrates each source with its own draft, and requires the predicted outcome: zero invalid records for the clean sample, and failures only on the rows the draft flagged. Wired into CI.
 
-### 12. Verification command (shipped)
+### 12. Verification command
 
 - What: `airlock-db verify --input ... --output-dir DIR` reconciles the committed target database against the records the run accepted: counts plus per-record digests.
 - Why: operators need a handoff check that does not depend on the repository scripts.
 - Verification: `scripts/verify_handoff.py` runs real migrations and requires an untouched target to verify, then requires changed, deleted, inserted, re-policied, and re-edited-source variants to fail with the matching counts. Wired into CI.
 
-### 13. Small CLI wins (shipped)
+### 13. Small CLI wins
 
 - What: `repair --emit-decisions` writes a decisions template for the error log, `--sample N` bounds a run for a quick previewing pass, and `--source-query SQL` reads a custom SELECT from a source database.
 - Verification: `scripts/verify_cli_wins.py` drives all three through the real CLI: sampled runs stop at the requested count and mark themselves as previews, queries filter, verify, and are refused when malformed, and an emitted template stays inert until a line is edited. Wired into CI beside the repair and source-database steps.
 
-### 14. Scale proof (shipped)
+### 14. Scale proof
 
 - What: a scripted 1M-row soak run that records wall time and peak memory, plus a reduced variant in CI.
 - Why: prove the streaming story at scale before the input surface grows again.
