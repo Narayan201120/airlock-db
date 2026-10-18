@@ -35,7 +35,7 @@ The command writes `airlock_report.html` and `airlock_summary.json` into the out
 - Valid rows commit together in one SQLite transaction. A large transaction needs free disk space for the database and SQLite's rollback journal.
 - Amounts are stored as normalized fixed-point strings with two fractional digits, preserving their value without exponent notation.
 - Managed version 1 databases are upgraded in 1,000-row pages when opened. AirLock DB refuses to adopt an existing unversioned or incompatible `transactions` table.
-- `airlock_summary.json` is a machine-readable copy of the run: counts, drift categories, storage statistics, source labels, and the exit code. CI jobs and dashboards can read it without parsing the HTML. Anonymize mode redacts source labels.
+- `airlock_summary.json` is a machine-readable copy of the run: counts, drift categories, storage statistics, source labels, a manifest of the source files with their sizes and SHA-256 digests, and the exit code. CI jobs and dashboards can read it without parsing the HTML. Anonymize mode redacts source labels and reduces the manifest to labels.
 
 ### JSONL target output
 
@@ -231,6 +231,8 @@ python main.py verify --input legacy/tickets.json --config schema_draft.yaml --o
 ```
 
 The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--fixed-width`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
+
+Each source file is also hashed again and compared with the `source_manifest` recorded by the run, by size and SHA-256, so a swapped file of the same shape fails with the file named even when every row still matches. An anonymized run keeps labels only, and a summary without a manifest skips the check with a notice.
 
 When the database is absent but `target_migration.jsonl` is present, the file is verified the same way: each line is read as the model's JSON dump, and the `target` block in `airlock_verify.json` names the checked file. A two-target run verifies its database, which is canonical.
 

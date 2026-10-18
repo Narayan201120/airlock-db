@@ -18,9 +18,10 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ._version import __version__
+from .source_manifest import SourceManifestCollector, compare_manifests
 
 VERIFY_FORMAT = "airlock-db-target-verification"
 _DEFAULT_LIMIT_SAMPLES = 10
@@ -65,6 +66,48 @@ def _timestamp() -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
+
+
+def _manifest_result(
+    recorded: Sequence[Mapping[str, Any]] | None,
+    collector: SourceManifestCollector | None,
+    notice: str | None,
+) -> tuple[bool, dict[str, Any], list[str]]:
+    """Return the source manifest verdict, its report block, and its lines."""
+
+    if collector is None or recorded is None:
+        block: dict[str, Any] = {"status": "skipped", "notice": notice}
+        return True, block, [f"Source manifest: skipped ({notice})"]
+    comparison = compare_manifests(recorded, collector.entries)
+    if comparison.ok:
+        block = {
+            "status": "matched",
+            "checked": len(recorded),
+            "matched": comparison.matched,
+            "changed": [],
+            "missing": [],
+            "extra": [],
+        }
+        return True, block, [f"Source manifest: {comparison.matched} file(s) matched"]
+    block = {
+        "status": "mismatch",
+        "checked": len(recorded),
+        "matched": comparison.matched,
+        "changed": list(comparison.changed),
+        "missing": list(comparison.missing),
+        "extra": list(comparison.extra),
+    }
+    lines = [
+        f"Source manifest: {len(comparison.changed)} changed, "
+        f"{len(comparison.missing)} missing, {len(comparison.extra)} extra"
+    ]
+    for label in comparison.changed:
+        lines.append(f"  - changed: {label}")
+    for label in comparison.missing:
+        lines.append(f"  - missing: {label}")
+    for label in comparison.extra:
+        lines.append(f"  - extra: {label}")
+    return False, block, lines
 
 
 def verify_main(argv: Sequence[str] | None = None) -> int:
@@ -252,6 +295,20 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         )
     anonymized = args.anonymized or recorded_anonymized
 
+    recorded_manifest: Sequence[Mapping[str, Any]] | None = None
+    manifest_notice: str | None = None
+    if summary is None:
+        manifest_notice = "no run summary was found"
+    elif not isinstance(summary.get("source_manifest"), list):
+        manifest_notice = "the run summary has no source manifest"
+    elif anonymized:
+        manifest_notice = "the run was anonymized; the manifest keeps labels only"
+    else:
+        recorded_manifest = summary["source_manifest"]
+    manifest_collector = (
+        SourceManifestCollector() if recorded_manifest is not None else None
+    )
+
     if dynamic_schema is None:
         table_name = TRANSACTION_TABLE
         column_names: tuple[str, ...] = TRANSACTION_COLUMNS
@@ -317,6 +374,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
                     fixed_width=fixed_width_layout,
+                    source_manifest=manifest_collector,
                 ):
                     record = result.transaction
                     if record is None:
@@ -464,8 +522,15 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             )
             for sample in unexpected_samples:
                 print(f"  - {sample['id']}")
-        if consistent:
+        manifest_ok, manifest_block, manifest_lines = _manifest_result(
+            recorded_manifest, manifest_collector, manifest_notice
+        )
+        for line in manifest_lines:
+            print(line)
+        if consistent and manifest_ok:
             print("Verification: consistent")
+        elif consistent:
+            print("Verification: mismatch (source manifest differs)")
         else:
             print(
                 f"Verification: mismatch (changed {changed}, missing {missing}, "
@@ -482,8 +547,9 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             "version": 1,
             "airlock_version": __version__,
             "generated_at": _timestamp(),
-            "status": "consistent" if consistent else "mismatch",
+            "status": "consistent" if (consistent and manifest_ok) else "mismatch",
             "target": {"jsonl": str(jsonl_path)},
+            "source_manifest": manifest_block,
             "conflict_policy": policy,
             "anonymized": anonymized,
             "excluded_fields": list(excluded_fields),
@@ -519,7 +585,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             )
         else:
             print(f"Verification report: {report_path}")
-        return 0 if consistent else 1
+        return 0 if (consistent and manifest_ok) else 1
 
     select_columns = ", ".join(quote_identifier(name) for name in column_names)
     quoted_table = quote_identifier(table_name)
@@ -570,6 +636,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
                     fixed_width=fixed_width_layout,
+                    source_manifest=manifest_collector,
                 ):
                     record = result.transaction
                     if record is None:
@@ -685,8 +752,15 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         )
         for sample in unexpected_samples:
             print(f"  - {sample['id']}")
-    if consistent:
+    manifest_ok, manifest_block, manifest_lines = _manifest_result(
+        recorded_manifest, manifest_collector, manifest_notice
+    )
+    for line in manifest_lines:
+        print(line)
+    if consistent and manifest_ok:
         print("Verification: consistent")
+    elif consistent:
+        print("Verification: mismatch (source manifest differs)")
     else:
         print(
             f"Verification: mismatch (changed {changed}, missing {missing}, "
@@ -703,8 +777,9 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         "version": 1,
         "airlock_version": __version__,
         "generated_at": _timestamp(),
-        "status": "consistent" if consistent else "mismatch",
+        "status": "consistent" if (consistent and manifest_ok) else "mismatch",
         "target": {"database": str(database_path), "table": table_name},
+        "source_manifest": manifest_block,
         "conflict_policy": policy,
         "anonymized": anonymized,
         "excluded_fields": list(excluded_fields),
@@ -738,7 +813,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         print(f"Verification report: {report_path}")
-    return 0 if consistent else 1
+    return 0 if (consistent and manifest_ok) else 1
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, TextIO
 
 from .fixed_width import FixedWidthLayout
+from .source_manifest import SourceManifestCollector
 
 
 logger = logging.getLogger(__name__)
@@ -1908,6 +1909,7 @@ def iter_source_records(
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
+    source_manifest: SourceManifestCollector | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Yield decoded records from one file, directory, or database table.
 
@@ -1916,11 +1918,19 @@ def iter_source_records(
     be read. ``csv_delimiter`` and ``csv_encoding`` override the defaults
     for CSV/TSV sources. ``fixed_width`` replaces suffix-based readers with
     one positional layout, including for archive members and directory
-    scans. File-level and database-level failures are yielded as records
-    with an attached ``issue``.
+    scans. ``source_manifest`` records one entry per file as it is opened,
+    which lets a later ``verify`` compare the exact bytes that were read.
+    File-level and database-level failures are yielded as records with an
+    attached ``issue``.
     """
 
     if isinstance(source, DatabaseSource):
+        if source_manifest is not None:
+            database_path = Path(source.path)
+            label = str(database_path)
+            if source_labeler is not None:
+                label = source_labeler(label)
+            source_manifest.record(database_path, label)
         yield from _iter_database_records(source, source_labeler=source_labeler)
         return
 
@@ -1930,6 +1940,11 @@ def iter_source_records(
         if isinstance(entry, InputRecord):
             yield entry
             continue
+        if source_manifest is not None:
+            label = str(entry)
+            if source_labeler is not None:
+                label = source_labeler(label)
+            source_manifest.record(entry, label)
         suffix = entry.suffix.casefold()
         if suffix in ARCHIVE_SUFFIXES:
             records = _iter_archive_file(

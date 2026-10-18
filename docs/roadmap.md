@@ -121,12 +121,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: the same duplicate and conflict-policy semantics as the SQLite path, the same exit codes, and an `airlock_verify.json` whose `target` block names the checked file. No sidecar digests; the JSONL rows stay canonical.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py` migrates a fixture to a JSONL-only target and requires the untouched file to verify (4 matched, exit 0) before requiring an altered row (changed 1), a deleted row (missing 1), an appended row (unexpected 1), and a corrupt line (exit 1 with its line number) to fail with exactly those counts; a duplicate-id fixture proves the recorded policy with altered and deleted duplicates landing differently under `skip` and `replace`; anonymized fields stay out of the digests while a changed business field still fails; a two-target run verifies its database; and a missing target fails with `nothing to verify`. The report's `target` block names the checked file (10 scenarios). Wired into CI.
 
-### 18. Audit manifest in the run summary
+### 18. Audit manifest in the run summary (shipped)
 
 - What: `airlock_summary.json` records a `source_manifest` with one entry per expanded source file: label, size, and SHA-256, beside the version and schema fingerprint it already carries. `verify` re-reads each source, hashes it in bounded chunks, and compares size and digest against the manifest.
 - Why: a handoff should prove which bytes the run validated. A swapped file of the same shape passes `verify` silently today.
-- Scope: one streaming read per source, no second pass and no unbounded memory. Anonymized runs keep labels only. A summary without a manifest keeps verifying with a notice.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_source_manifest.py` requires the manifest to match an independent hash, requires a same-size swapped source to fail `verify` with the file named, and requires both an untouched copy and an old summary to pass. Wired into CI.
+- Scope: each source file gets one streaming hash read in bounded chunks, beside the read the run already does; memory stays flat regardless of file size. Anonymized runs keep labels only. A summary without a manifest keeps verifying with a notice.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_source_manifest.py` requires each recorded entry to match an independent SHA-256 and the file's size, and requires a same-size swapped source to fail `verify` with the file named while every row still matches. A deleted source and an added file land in the manifest report, an untouched copy passes, an old summary passes with a skip notice, and an anonymized run keeps labels only (9 scenarios). Wired into CI.
 
 ### 19. Decisions dry-run
 

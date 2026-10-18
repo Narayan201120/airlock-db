@@ -89,6 +89,9 @@ jobs:
       - name: JSONL target verification
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_jsonl_target.py ci-jsonl-verify
+      - name: Source manifest verification
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_source_manifest.py ci-source-manifest
       - name: Multi-table source database
         run: |
           python - <<'PY'

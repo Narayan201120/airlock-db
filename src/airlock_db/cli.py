@@ -450,6 +450,7 @@ def run_migration(args: argparse.Namespace) -> int:
     from .report import write_html_report
     from .schema_config import DynamicSchema, SchemaConfigError
     from .schemas import FinancialTransaction
+    from .source_manifest import SourceManifestCollector
     from .sqlite_store import SQLiteTargetStore, read_migration_progress
     from .summary import build_run_summary, sample_notice, write_run_summary
 
@@ -662,6 +663,7 @@ def run_migration(args: argparse.Namespace) -> int:
 
     metrics = ValidationMetrics()
     report_issues: list[dict[str, object]] = []
+    source_manifest = SourceManifestCollector(anonymized=anonymizer is not None)
     storage_error: str | None = None
     store: SQLiteTargetStore | DynamicSQLiteTargetStore | None = None
     storage_summary: dict[str, object] = {
@@ -783,6 +785,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 excluded_paths=(repair_log_path,) if repair_log_path is not None else (),
                 csv_delimiter=getattr(args, "csv_delimiter", None),
                 csv_encoding=getattr(args, "csv_encoding", None),
+                source_manifest=source_manifest,
             ):
                 resumed_here = (
                     resume
@@ -1104,6 +1107,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 metrics,
                 storage=storage_summary,
                 sources=source_labels,
+                source_manifest=source_manifest.entries,
                 schema_name=(
                     dynamic_schema.model_name
                     if dynamic_schema

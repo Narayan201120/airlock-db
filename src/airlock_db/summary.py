@@ -45,6 +45,7 @@ def build_run_summary(
     *,
     storage: Mapping[str, Any],
     sources: Sequence[str],
+    source_manifest: Sequence[Mapping[str, Any]] | None = None,
     schema_name: str,
     schema_fingerprint: str,
     output_format: str,
@@ -100,6 +101,11 @@ def build_run_summary(
         "drift": {category: count for category, count in data["drift_counts"].items()},
         "source_counts": data.get("source_counts", {}),
         "sources": list(sources),
+        "source_manifest": (
+            [dict(entry) for entry in source_manifest]
+            if source_manifest is not None
+            else None
+        ),
         "issue_rows": [dict(row) for row in (issue_rows or ())],
         "storage": storage_snapshot,
         "exit_code": exit_code,
