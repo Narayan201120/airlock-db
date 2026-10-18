@@ -12,6 +12,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 | `--source-query SQL` | A single SELECT statement read from each `--source-db` instead of a table. One query per database; cannot be combined with `--source-table`. |
 | `--csv-delimiter CHAR` | Delimiter for CSV input. Defaults to a comma, or a tab for `.tsv` files. |
 | `--csv-encoding NAME` | Text encoding for CSV input. Defaults to `utf-8-sig` (tolerates a BOM). |
+| `--input-encoding NAME` | Text encoding for JSON, JSONL, CSV, and TSV input. Defaults to `utf-8-sig`. For CSV and TSV, `--csv-encoding` wins when both are given. |
 | `--fixed-width PATH` | JSON or YAML layout that reads every input file as fixed-width records instead of choosing a reader by suffix. |
 | `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
 | `--config PATH` | Optional JSON or YAML file defining a dynamic record schema. |
@@ -69,7 +70,7 @@ A preview is not a handoff. `verify` against a sampled target reports the unscan
 
 `.csv` and `.tsv` files are read with the standard library `csv` module. The first non-blank line is the header; header names map to schema fields exactly like JSON keys, so missing and unknown columns produce the usual drift errors. Empty cells become `null`. A row with more values than the header defines is rejected as `csv_extra_values`.
 
-Encoding defaults to `utf-8-sig`, which tolerates a byte-order mark, and the delimiter defaults to a comma or, for `.tsv`, a tab. Override either with `--csv-delimiter` and `--csv-encoding`. A missing or duplicate header stops the file with a clear `csv_header_missing` or `csv_duplicate_header` source error.
+Encoding defaults to `utf-8-sig`, which tolerates a byte-order mark, and the delimiter defaults to a comma or, for `.tsv`, a tab. Override the delimiter with `--csv-delimiter` and the encoding with `--csv-encoding`; `--input-encoding` also covers CSV and TSV when an export is not UTF-8. A missing or duplicate header stops the file with a clear `csv_header_missing` or `csv_duplicate_header` source error.
 
 ### Fixed-width input
 
@@ -230,7 +231,7 @@ After a run, `verify` reconciles the committed target database with the sources 
 python main.py verify --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
 
-The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--fixed-width`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
+The command re-reads the sources with the flags of the original run (`--input`, `--source-db`, `--source-table`, `--source-query`, `--csv-delimiter`, `--csv-encoding`, `--input-encoding`, `--fixed-width`, `--config`, or `--constraints`). It rebuilds every stored row with the migration's own row builder, computes one digest per record, and compares those digests with the rows in `target_migration.db`, which it opens read-only. Changed, missing, and unexpected rows are reported with the first 10 IDs of each kind, and the same result lands in `airlock_verify.json` inside the output directory.
 
 Each source file is also hashed again and compared with the `source_manifest` recorded by the run, by size and SHA-256, so a swapped file of the same shape fails with the file named even when every row still matches. An anonymized run keeps labels only, and a summary without a manifest skips the check with a notice.
 

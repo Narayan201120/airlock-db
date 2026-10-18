@@ -336,6 +336,11 @@ def infer_main(argv: Sequence[str] | None = None) -> int:
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
     )
     parser.add_argument(
+        "--input-encoding",
+        metavar="NAME",
+        help="text encoding for JSON, JSONL, CSV, and TSV input; defaults to utf-8-sig, which tolerates a BOM",
+    )
+    parser.add_argument(
         "--fixed-width",
         metavar="PATH",
         help="JSON or YAML layout that reads every input file as fixed-width records instead of by suffix",
@@ -348,8 +353,12 @@ def infer_main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from .fixed_width import FixedWidthConfigError, FixedWidthLayout
-    from .ingestion import iter_source_records
+    from .ingestion import check_text_encoding, iter_source_records
 
+    try:
+        input_encoding = check_text_encoding(args.input_encoding)
+    except ValueError as exc:
+        return _fail(str(exc))
     fixed_width_layout: FixedWidthLayout | None = None
     if args.fixed_width:
         try:
@@ -371,6 +380,7 @@ def infer_main(argv: Sequence[str] | None = None) -> int:
         excluded_paths=[output_path],
         csv_delimiter=args.csv_delimiter,
         csv_encoding=args.csv_encoding,
+        input_encoding=input_encoding,
         fixed_width=fixed_width_layout,
     )
     try:

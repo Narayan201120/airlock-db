@@ -529,6 +529,7 @@ def iter_validated_records(
     excluded_paths: Iterable[str | Path] = (),
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
     source_manifest: SourceManifestCollector | None = None,
 ) -> Generator[MigrationRecordResult, None, None]:
@@ -557,6 +558,7 @@ def iter_validated_records(
                 excluded_paths=excluded_path_list,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                input_encoding=input_encoding,
                 fixed_width=fixed_width,
                 source_manifest=source_manifest,
             )

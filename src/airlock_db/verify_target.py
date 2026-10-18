@@ -115,7 +115,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import dynamic_row, quote_identifier
     from .fixed_width import FixedWidthConfigError, FixedWidthLayout
-    from .ingestion import DatabaseSource, validate_source_query
+    from .ingestion import DatabaseSource, check_text_encoding, validate_source_query
     from .pipeline import iter_validated_records
     from .schema_config import DynamicSchema, SchemaConfigError
     from .schemas import FinancialTransaction
@@ -167,6 +167,11 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
         "--csv-encoding",
         metavar="NAME",
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
+    )
+    parser.add_argument(
+        "--input-encoding",
+        metavar="NAME",
+        help="the text encoding the original run used for JSON, JSONL, CSV, and TSV input",
     )
     parser.add_argument(
         "--fixed-width",
@@ -251,6 +256,10 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             2,
         )
 
+    try:
+        input_encoding = check_text_encoding(args.input_encoding)
+    except ValueError as exc:
+        return _fail(str(exc), 2)
     fixed_width_layout: FixedWidthLayout | None = None
     if args.fixed_width:
         try:
@@ -373,6 +382,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     ),
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
+                    input_encoding=input_encoding,
                     fixed_width=fixed_width_layout,
                     source_manifest=manifest_collector,
                 ):
@@ -635,6 +645,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     ),
                     csv_delimiter=args.csv_delimiter,
                     csv_encoding=args.csv_encoding,
+                    input_encoding=input_encoding,
                     fixed_width=fixed_width_layout,
                     source_manifest=manifest_collector,
                 ):

@@ -420,16 +420,35 @@ def _source_issue(
     )
 
 
+def check_text_encoding(name: str | None) -> str | None:
+    """Return a text encoding name after checking that Python knows it.
+
+    Raises ``ValueError`` for unknown or broken names so every command can
+    report the same message before it starts reading sources.
+    """
+
+    if not name:
+        return None
+    try:
+        codecs.lookup(name)
+    except LookupError as exc:
+        raise ValueError(f"unknown text encoding {name!r}") from exc
+    return name
+
+
 def _iter_json_file(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
     opener: Callable[..., Any] | None = None,
+    encoding: str | None = None,
 ) -> Generator[InputRecord, None, None]:
     number = 0
     try:
         open_stream = opener if opener is not None else path.open
-        with open_stream("rt", encoding="utf-8-sig", errors="strict") as stream:
+        with open_stream(
+            "rt", encoding=encoding or "utf-8-sig", errors="strict"
+        ) as stream:
             for value in _iter_json_values(stream):
                 number += 1
                 yield InputRecord(str(path), number, value=value)
@@ -633,6 +652,7 @@ def _iter_json_lines(
     *,
     source_labeler: Callable[[str], str] | None = None,
     opener: Callable[..., Any] | None = None,
+    encoding: str | None = None,
 ) -> Generator[InputRecord, None, None]:
     line_number = 0
     saw_record_line = False
@@ -660,7 +680,7 @@ def _iter_json_lines(
                     continue
                 try:
                     assert raw_line is not None
-                    line = raw_line.decode("utf-8", errors="strict")
+                    line = raw_line.decode(encoding or "utf-8", errors="strict")
                 except UnicodeDecodeError as exc:
                     saw_record_line = True
                     yield _source_issue(
@@ -1742,9 +1762,14 @@ def _records_for_suffix(
     source_labeler: Callable[[str], str] | None,
     csv_delimiter: str | None,
     csv_encoding: str | None,
+    input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[InputRecord, None, None] | None:
-    """Pick the reader for a content suffix, or None when unsupported."""
+    """Pick the reader for a content suffix, or None when unsupported.
+
+    ``input_encoding`` sets the text encoding for the JSON and JSONL
+    readers and backs up ``csv_encoding`` for CSV and TSV.
+    """
 
     if fixed_width is not None:
         return _iter_fixed_width_file(
@@ -1754,9 +1779,19 @@ def _records_for_suffix(
             opener=opener,
         )
     if suffix == ".json":
-        return _iter_json_file(path, source_labeler=source_labeler, opener=opener)
+        return _iter_json_file(
+            path,
+            source_labeler=source_labeler,
+            opener=opener,
+            encoding=input_encoding,
+        )
     if suffix in {".jsonl", ".ndjson"}:
-        return _iter_json_lines(path, source_labeler=source_labeler, opener=opener)
+        return _iter_json_lines(
+            path,
+            source_labeler=source_labeler,
+            opener=opener,
+            encoding=input_encoding,
+        )
     if suffix == ".xml":
         return _iter_xml_file(path, source_labeler=source_labeler, opener=opener)
     if suffix in {".csv", ".tsv"}:
@@ -1765,7 +1800,7 @@ def _records_for_suffix(
             source_labeler=source_labeler,
             opener=opener,
             delimiter=csv_delimiter,
-            encoding=csv_encoding,
+            encoding=csv_encoding or input_encoding,
         )
     return None
 
@@ -1799,6 +1834,7 @@ def _iter_archive_file(
     source_labeler: Callable[[str], str] | None = None,
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Stream records from a .gz file or a .zip archive without extracting.
@@ -1830,6 +1866,7 @@ def _iter_archive_file(
             source_labeler=source_labeler,
             csv_delimiter=csv_delimiter,
             csv_encoding=csv_encoding,
+            input_encoding=input_encoding,
             fixed_width=fixed_width,
         )
         if records is not None:
@@ -1891,6 +1928,7 @@ def _iter_archive_file(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                input_encoding=input_encoding,
                 fixed_width=fixed_width,
             )
             if records is None:
@@ -1908,6 +1946,7 @@ def iter_source_records(
     excluded_paths: Iterable[str | Path] = (),
     csv_delimiter: str | None = None,
     csv_encoding: str | None = None,
+    input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
     source_manifest: SourceManifestCollector | None = None,
 ) -> Generator[InputRecord, None, None]:
@@ -1916,12 +1955,15 @@ def iter_source_records(
     JSON arrays are decoded incrementally. JSONL/NDJSON and CSV/TSV syntax
     errors are isolated to their physical row so subsequent rows can still
     be read. ``csv_delimiter`` and ``csv_encoding`` override the defaults
-    for CSV/TSV sources. ``fixed_width`` replaces suffix-based readers with
-    one positional layout, including for archive members and directory
-    scans. ``source_manifest`` records one entry per file as it is opened,
-    which lets a later ``verify`` compare the exact bytes that were read.
-    File-level and database-level failures are yielded as records with an
-    attached ``issue``.
+    for CSV/TSV sources, and ``csv_encoding`` wins over ``input_encoding``
+    there. ``input_encoding`` sets the text encoding for JSON, JSONL, and
+    line-based TSV sources, which default to ``utf-8-sig``. ``fixed_width``
+    replaces suffix-based readers with one positional layout, including for
+    archive members and directory scans; the layout carries its own
+    encoding. ``source_manifest`` records one entry per file as it is
+    opened, which lets a later ``verify`` compare the exact bytes that were
+    read. File-level and database-level failures are yielded as records
+    with an attached ``issue``.
     """
 
     if isinstance(source, DatabaseSource):
@@ -1952,6 +1994,7 @@ def iter_source_records(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                input_encoding=input_encoding,
                 fixed_width=fixed_width,
             )
         else:
@@ -1962,6 +2005,7 @@ def iter_source_records(
                 source_labeler=source_labeler,
                 csv_delimiter=csv_delimiter,
                 csv_encoding=csv_encoding,
+                input_encoding=input_encoding,
                 fixed_width=fixed_width,
             )
         if records is None:

@@ -135,12 +135,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: the same parsing, validation, and fingerprint checks as a live run. Exit 0 when every entry would apply, 1 when an entry would fail validation, 2 for parse errors and log mismatches. Output follows the `--sample` notice convention.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_decisions_dry_run.py` requires a dry-run to leave the database, the checkpoints, and the repair log byte-identical while predicting one outcome per entry (2 correct, 1 drop, 1 skip, and an unused entry ignored), applies the same file for real and requires the predicted counts (2 corrected, 1 dropped, 3 decisions saved, 2 rows added), reports the saved entries as ignored on a second dry-run, and requires a decision that would fail validation (exit 1) and parse errors and a missing `--decisions` (exit 2) to write nothing (5 scenarios). Wired into CI.
 
-### 20. Input encoding override
+### 20. Input encoding override (shipped)
 
 - What: `--input-encoding NAME` sets the text encoding for readers that currently hard-code `utf-8-sig`: the JSON reader, the JSONL byte parser, and the line-based TSV and header readers. `--csv-encoding` remains for CSV.
 - Why: air-gapped exports are frequently cp1252 or latin-1. Today they fail with an `encoding_error` even though the data is readable.
-- Scope: XML stays declaration-driven by design. The flag threads through `verify` and `infer` beside the existing CSV options.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py` migrates a cp1252 fixture with the flag and requires clean counts, then requires the same file to fail without it. Wired into CI.
+- Scope: XML stays declaration-driven by design, and fixed-width layouts keep the encoding from their layout file. The flag threads through `verify` and `infer` beside the existing CSV options.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py` requires every cp1252 fixture (JSONL, JSON array, TSV, CSV, and a gz member) to fail without the flag and migrate clean with it, the decoded text to survive into SQLite, CSV to keep `--csv-encoding` while accepting `--input-encoding`, a UTF-8-with-BOM file to read without flags, `verify` and `infer` to honor the flag, and unknown names to exit 2 or 1 (9 scenarios). Wired into CI.
 
 ### 21. Run-to-run comparison
 

@@ -104,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="text encoding for CSV input; defaults to utf-8-sig, which tolerates a BOM",
     )
     parser.add_argument(
+        "--input-encoding",
+        metavar="NAME",
+        help="text encoding for JSON, JSONL, CSV, and TSV input; defaults to utf-8-sig, which tolerates a BOM",
+    )
+    parser.add_argument(
         "--fixed-width",
         metavar="PATH",
         help="JSON or YAML layout that reads every input file as fixed-width records instead of by suffix",
@@ -443,7 +448,7 @@ def run_migration(args: argparse.Namespace) -> int:
     from .constraints import ConstraintConfigError, ValidationConstraints
     from .dynamic_store import DynamicSQLiteTargetStore
     from .fixed_width import FixedWidthConfigError, FixedWidthLayout
-    from .ingestion import DatabaseSource, validate_source_query
+    from .ingestion import DatabaseSource, check_text_encoding, validate_source_query
     from .jsonl_target import JsonlTargetWriter
     from .pipeline import DriftCategory, ValidationMetrics, iter_validated_records
     from .repair_log import RepairLogError, RepairLogWriter, constraints_fingerprint
@@ -526,6 +531,11 @@ def run_migration(args: argparse.Namespace) -> int:
             "for this run's records only",
             file=sys.stderr,
         )
+    try:
+        input_encoding = check_text_encoding(getattr(args, "input_encoding", None))
+    except ValueError as exc:
+        print(f"airlock-db: {exc}", file=sys.stderr)
+        return 2
     fixed_width_layout: FixedWidthLayout | None = None
     if getattr(args, "fixed_width", None):
         try:
@@ -785,6 +795,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 excluded_paths=(repair_log_path,) if repair_log_path is not None else (),
                 csv_delimiter=getattr(args, "csv_delimiter", None),
                 csv_encoding=getattr(args, "csv_encoding", None),
+                input_encoding=input_encoding,
                 source_manifest=source_manifest,
             ):
                 resumed_here = (
