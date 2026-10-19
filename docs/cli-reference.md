@@ -14,7 +14,7 @@ Options, outputs, limits, and configuration formats. See [the repair guide](repa
 | `--csv-encoding NAME` | Text encoding for CSV input. Defaults to `utf-8-sig` (tolerates a BOM). |
 | `--input-encoding NAME` | Text encoding for JSON, JSONL, CSV, and TSV input. Defaults to `utf-8-sig`. For CSV and TSV, `--csv-encoding` wins when both are given. |
 | `--fixed-width PATH` | JSON or YAML layout that reads every input file as fixed-width records instead of choosing a reader by suffix. |
-| `--constraints JSON` | Optional local JSON file with additional business constraints. Built-in schema only. |
+| `--constraints JSON` | Optional local JSON file with additional business constraints. The six built-in keys serve the built-in schema; `field_rules` serves dynamic schemas. |
 | `--config PATH` | Optional JSON or YAML file defining a dynamic record schema. |
 | `--output-dir DIR` | Output directory. Defaults to `output`. |
 | `--output-format FORMAT` | `sqlite` (default), `jsonl`, or `both`. Chooses the migration target format. |
@@ -158,7 +158,20 @@ The target schema always enforces required fields, data types, enumerations, tim
 
 All keys are optional. Unknown keys, duplicate keys, invalid enum values, and inconsistent amount bounds stop the run before input is processed. The bundled `examples/constraints.json` shows a complete example. If you omit `--constraints`, only the target schema applies.
 
-The constraints file applies only to the built-in financial transaction schema and cannot be combined with `--config`. Express those rules as field constraints in the layout instead.
+The six keys above apply only to the built-in financial transaction schema. `field_rules` carries per-record business rules for the built-in schema and for dynamic ones, and combines with `--config`:
+
+```json
+{
+  "field_rules": [
+    {"field": "status", "enum": ["open", "closed"]},
+    {"field": "quantity", "min": 1, "max": 500},
+    {"field": "sku", "pattern": "^SKU-[0-9]{4}$"},
+    {"required_any_of": ["email", "phone"]}
+  ]
+}
+```
+
+Each entry names one field with any of `enum`, `min`, `max`, and `pattern`, or lists `required_any_of` fields. Rules run after validation, on records that passed the schema, and each failure rejects the record with its own reason: `constraint_enum`, `constraint_range`, `constraint_pattern`, or `constraint_required_any_of`. Enum values compare numerically when both sides are numbers and by trimmed text otherwise, case-sensitive. `min` and `max` are inclusive, `pattern` must match the whole text value, and `required_any_of` passes when any listed field holds a value that is not null or empty. Rules apply only when the field is present; nulls pass, and required-ness stays the schema's job. Unknown keys inside an entry, two entries for one field, an entry that mixes `required_any_of` with field keys, an empty enum, `min` above `max`, and invalid regexes stop the run with exit 2. A file that carries any of the six built-in keys cannot be combined with `--config`; one that carries only `field_rules` can.
 
 ## Dynamic schema configuration
 

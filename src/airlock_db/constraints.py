@@ -24,8 +24,11 @@ _ALLOWED_KEYS = frozenset(
         "allowed_statuses",
         "min_amount",
         "max_amount",
+        "field_rules",
     }
 )
+_RULE_KEYS = frozenset({"field", "enum", "min", "max", "pattern", "required_any_of"})
+_RULE_FIELD_KEYS = ("enum", "min", "max", "pattern")
 _TRANSACTION_TYPES = frozenset({"DEBIT", "CREDIT", "REFUND"})
 _STATUSES = frozenset({"PENDING", "POSTED", "REVERSED"})
 
@@ -86,6 +89,195 @@ def _parse_amount(name: str, value: Any) -> Decimal | None:
     return amount
 
 
+def _canonical_decimal(value: Decimal) -> str:
+    parts = value.as_tuple()
+    digits = list(parts.digits)
+    exponent = parts.exponent
+    while digits and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    if not digits:
+        return "0"
+    coefficient = str(digits[0])
+    if len(digits) > 1:
+        coefficient += "." + "".join(str(digit) for digit in digits[1:])
+    adjusted_exponent = exponent + len(digits) - 1
+    sign = "-" if parts.sign else ""
+    return f"{sign}{coefficient}e{adjusted_exponent}"
+
+
+def _enum_comparison_key(value: Any) -> tuple[str, str]:
+    """Canonical key that mirrors the runtime enum comparison rule."""
+
+    if isinstance(value, bool):
+        return ("text", str(value))
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            number = None
+        if number is not None and number.is_finite():
+            return ("number", _canonical_decimal(number))
+        return ("text", text)
+    if isinstance(value, (int, Decimal)):
+        number = Decimal(value)
+        if number.is_finite():
+            return ("number", _canonical_decimal(number))
+    return ("text", str(value))
+
+
+def _parse_rule_bound(label: str, name: str, field_name: str, value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
+        raise ConstraintConfigError(f"{label} {name} for field {field_name!r} must be a JSON number")
+    number = Decimal(value)
+    if not number.is_finite():
+        raise ConstraintConfigError(f"{label} {name} for field {field_name!r} must be a finite number")
+    return number
+
+
+def _parse_field_rules(value: Any) -> tuple[FieldRule, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConstraintConfigError("field_rules must be a JSON array")
+
+    rules: list[FieldRule] = []
+    seen_fields: dict[str, int] = {}
+    for index, entry in enumerate(value):
+        label = f"field_rules[{index}]"
+        if not isinstance(entry, dict):
+            raise ConstraintConfigError(f"{label} must be a JSON object")
+        unknown = set(entry) - _RULE_KEYS
+        if unknown:
+            raise ConstraintConfigError(
+                f"{label} has unknown key(s): " + ", ".join(sorted(unknown))
+            )
+        if "required_any_of" in entry and "field" in entry:
+            raise ConstraintConfigError(
+                f'{label} must declare "field" or "required_any_of", not both'
+            )
+        if "required_any_of" in entry:
+            ignored = [key for key in _RULE_FIELD_KEYS if key in entry]
+            if ignored:
+                raise ConstraintConfigError(
+                    f"{label} required_any_of cannot be combined with "
+                    + ", ".join(ignored)
+                )
+            names = entry["required_any_of"]
+            if not isinstance(names, list) or not names:
+                raise ConstraintConfigError(
+                    f"{label} required_any_of must be a non-empty JSON array of field names"
+                )
+            parsed: list[str] = []
+            for name in names:
+                if not isinstance(name, str) or not name.strip():
+                    raise ConstraintConfigError(
+                        f"{label} required_any_of must contain only non-empty field names"
+                    )
+                parsed.append(name.strip())
+            if len(set(parsed)) != len(parsed):
+                raise ConstraintConfigError(
+                    f"{label} required_any_of contains duplicate field names"
+                )
+            rules.append(FieldRule(required_any_of=tuple(parsed)))
+            continue
+        if "field" not in entry:
+            raise ConstraintConfigError(f'{label} must declare "field" or "required_any_of"')
+        field_name = entry["field"]
+        if not isinstance(field_name, str) or not field_name.strip():
+            raise ConstraintConfigError(f"{label} field must be a non-empty string")
+        field_name = field_name.strip()
+        if field_name in seen_fields:
+            raise ConstraintConfigError(
+                f"{label} duplicates the rules for field {field_name!r} "
+                f"(already declared by field_rules[{seen_fields[field_name]}])"
+            )
+        if not any(key in entry for key in _RULE_FIELD_KEYS):
+            raise ConstraintConfigError(
+                f"{label} for field {field_name!r} must declare at least one of "
+                "enum, min, max, pattern"
+            )
+
+        enum_values: tuple[Any, ...] = ()
+        if "enum" in entry:
+            raw_enum = entry["enum"]
+            if not isinstance(raw_enum, list) or not raw_enum:
+                raise ConstraintConfigError(
+                    f"{label} enum for field {field_name!r} must be a non-empty JSON array of scalars"
+                )
+            items: list[Any] = []
+            seen_values: set[tuple[str, str]] = set()
+            for item in raw_enum:
+                if isinstance(item, (dict, list)) or item is None:
+                    raise ConstraintConfigError(
+                        f"{label} enum for field {field_name!r} must contain only scalar values"
+                    )
+                key = _enum_comparison_key(item)
+                if key in seen_values:
+                    raise ConstraintConfigError(
+                        f"{label} enum for field {field_name!r} contains a duplicate value {item!r}"
+                    )
+                seen_values.add(key)
+                items.append(item)
+            enum_values = tuple(items)
+
+        minimum = (
+            _parse_rule_bound(label, "min", field_name, entry["min"])
+            if "min" in entry
+            else None
+        )
+        maximum = (
+            _parse_rule_bound(label, "max", field_name, entry["max"])
+            if "max" in entry
+            else None
+        )
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ConstraintConfigError(
+                f"{label} min must not exceed max for field {field_name!r}"
+            )
+
+        pattern_text: str | None = None
+        if "pattern" in entry:
+            raw_pattern = entry["pattern"]
+            if not isinstance(raw_pattern, str) or not raw_pattern:
+                raise ConstraintConfigError(
+                    f"{label} pattern for field {field_name!r} must be a non-empty string"
+                )
+            try:
+                re.compile(raw_pattern)
+            except re.error as exc:
+                raise ConstraintConfigError(
+                    f"{label} pattern for field {field_name!r} is not a valid "
+                    f"regular expression: {exc}"
+                ) from exc
+            pattern_text = raw_pattern
+
+        seen_fields[field_name] = index
+        rules.append(
+            FieldRule(
+                field=field_name,
+                enum=enum_values,
+                min=minimum,
+                max=maximum,
+                pattern=pattern_text,
+            )
+        )
+    return tuple(rules)
+
+
+@dataclass(frozen=True, slots=True)
+class FieldRule:
+    """One per-field constraint set, or one required-any-of group."""
+
+    field: str | None = None
+    enum: tuple[Any, ...] = ()
+    min: Decimal | None = None
+    max: Decimal | None = None
+    pattern: str | None = None
+    required_any_of: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationConstraints:
     """Optional business rules applied after the strict target schema."""
@@ -96,6 +288,19 @@ class ValidationConstraints:
     allowed_statuses: frozenset[str] | None = None
     min_amount: Decimal | None = None
     max_amount: Decimal | None = None
+    field_rules: tuple[FieldRule, ...] = ()
+
+    def has_builtin_keys(self) -> bool:
+        """Return True when the file configures any built-in schema rule."""
+
+        return (
+            self.allowed_currencies is not None
+            or self.allowed_account_ids is not None
+            or self.allowed_transaction_types is not None
+            or self.allowed_statuses is not None
+            or self.min_amount is not None
+            or self.max_amount is not None
+        )
 
     @classmethod
     def from_file(cls, path: str | Path) -> ValidationConstraints:
@@ -147,4 +352,5 @@ class ValidationConstraints:
             ),
             min_amount=min_amount,
             max_amount=max_amount,
+            field_rules=_parse_field_rules(raw.get("field_rules")),
         )

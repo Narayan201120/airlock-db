@@ -149,12 +149,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: no database reads, no new files, one self-contained report. A category that did not exist before is shown as new, not as a percentage.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_run_compare.py` runs two migrations over mutated sources (rejected rows fixed, a different issue category introduced, a third source added) and requires the stdout line and the delta section to match the diff computed from the two summaries. It runs the command twice for a byte-identical section, requires a missing baseline to exit 2 without rewriting the report, requires a run compared with itself to report all zeros, and re-checks that the report stays script-free and self-contained (7 scenarios). Wired into CI.
 
-### 22. Constraints for dynamic schemas
+### 22. Constraints for dynamic schemas (shipped)
 
 - What: a `field_rules` block in the constraints file extends business rules beyond the built-in model: per-field enum sets, numeric ranges, regex patterns, and required-any-of groups. Rules run after validation on dynamic records, each with its own reason: `constraint_enum`, `constraint_range`, `constraint_pattern`, `constraint_required_any_of`.
 - Why: client layouts deserve the same guards the built-in model gets. Today `--constraints` refuses anything but the built-in schema.
-- Scope: declarative JSON only; the built-in keys stay as they are. The fingerprint covers the full parsed file in canonical key order, so repair resume keeps working.
-- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dynamic_constraints.py` runs a dynamic migration with the rules and requires exactly the predicted rejections per reason, then requires a resumed repair session to accept the same fingerprint. Wired into CI.
+- Scope: declarative JSON only; the built-in keys stay as they are, and `field_rules` apply to the built-in model and to dynamic ones. The fingerprint covers the full parsed file in canonical key order, so repair resume keeps working; an empty rule set leaves every existing digest unchanged.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dynamic_constraints.py` runs a dynamic migration with the rules and requires exactly the predicted rejections per reason (2 enum, 2 range, 1 pattern, 1 required-any-of) with the exact messages, a clean run over valid rows, absent/null/empty-string edge cases, six bad rules files (including an entry that mixes `required_any_of` with field keys) that all stop the run with exit 2, the combination rule at migration, repair, and verify, a repair session that accepts the same fingerprint and rejects a variant, and verify with and without the rules file (7 scenarios). Wired into CI.
 
 ### 23. Air-gap deployment kit
 

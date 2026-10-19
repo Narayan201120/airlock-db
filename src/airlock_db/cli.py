@@ -117,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "-c",
         "--constraints",
         metavar="JSON",
-        help="optional JSON file with business rules for the built-in financial schema",
+        help="optional JSON file with business rules: built-in financial rules for the default schema, or field_rules (enums, ranges, patterns, required_any_of) for dynamic --config schemas",
     )
     parser.add_argument(
         "--config",
@@ -550,13 +550,6 @@ def run_migration(args: argparse.Namespace) -> int:
         except SchemaConfigError as exc:
             print(f"airlock-db: {exc}", file=sys.stderr)
             return 2
-        if args.constraints:
-            print(
-                "airlock-db: --constraints cannot be combined with --config; "
-                "put these rules in the schema config",
-                file=sys.stderr,
-            )
-            return 2
         if anonymizer is not None and not dynamic_schema.anonymized_fields:
             print(
                 "airlock-db: --anonymize with --config requires at least one field "
@@ -601,6 +594,17 @@ def run_migration(args: argparse.Namespace) -> int:
         except ConstraintConfigError as exc:
             print(f"airlock-db: {exc}", file=sys.stderr)
             return 2
+    if (
+        dynamic_schema is not None
+        and constraints is not None
+        and constraints.has_builtin_keys()
+    ):
+        print(
+            "airlock-db: --constraints cannot be combined with --config unless the "
+            "file contains only field_rules; put these rules in the schema config",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         output_directory.mkdir(parents=True, exist_ok=True)

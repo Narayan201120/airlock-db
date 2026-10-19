@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Generator
 from unicodedata import category
@@ -17,7 +19,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ValidationError
 
-from .constraints import ValidationConstraints
+from .constraints import FieldRule, ValidationConstraints
 from .fixed_width import FixedWidthLayout
 from .source_manifest import SourceManifestCollector
 from .ingestion import DatabaseSource, InputRecord, iter_source_records
@@ -418,6 +420,157 @@ def _configured_constraint_issues(
     return tuple(issues)
 
 
+@lru_cache(maxsize=256)
+def _compile_field_pattern(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
+def _plain_value(value: Any) -> Any:
+    return value.value if isinstance(value, Enum) else value
+
+
+def _field_text(value: Any) -> str:
+    value = _plain_value(value)
+    return value if isinstance(value, str) else str(value)
+
+
+def _field_number(value: Any) -> Decimal | None:
+    value = _plain_value(value)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return Decimal(str(value))
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    return number if number.is_finite() else None
+
+
+def _field_enum_matches(value: Any, allowed: tuple[Any, ...]) -> bool:
+    number = _field_number(value)
+    text = _field_text(value).strip()
+    for candidate in allowed:
+        candidate_number = _field_number(candidate)
+        if number is not None and candidate_number is not None:
+            if number == candidate_number:
+                return True
+        elif _field_text(candidate).strip() == text:
+            return True
+    return False
+
+
+def _field_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _field_rule_issues(
+    record_values: Mapping[str, Any],
+    rules: tuple[FieldRule, ...],
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for rule in rules:
+        if rule.required_any_of:
+            if not any(
+                _field_has_value(record_values.get(name))
+                for name in rule.required_any_of
+            ):
+                issues.append(
+                    ValidationIssue(
+                        code="constraint_required_any_of",
+                        category=DriftCategory.VALUE_CONSTRAINT,
+                        message=(
+                            "at least one of "
+                            f"{', '.join(rule.required_any_of)} is required"
+                        ),
+                        location=(),
+                    )
+                )
+            continue
+        field_name = rule.field
+        assert field_name is not None
+        value = record_values.get(field_name)
+        if value is None:
+            continue
+        if rule.enum and not _field_enum_matches(value, rule.enum):
+            issues.append(
+                ValidationIssue(
+                    code="constraint_enum",
+                    category=DriftCategory.VALUE_CONSTRAINT,
+                    message=f"{field_name} is not one of the configured values",
+                    location=(field_name,),
+                    input_value=_to_json_safe(value),
+                )
+            )
+        if rule.min is not None or rule.max is not None:
+            number = _field_number(value)
+            if number is None:
+                issues.append(
+                    ValidationIssue(
+                        code="constraint_range",
+                        category=DriftCategory.VALUE_CONSTRAINT,
+                        message=f"{field_name} is not numeric",
+                        location=(field_name,),
+                        input_value=_to_json_safe(value),
+                    )
+                )
+            else:
+                if rule.min is not None and number < rule.min:
+                    issues.append(
+                        ValidationIssue(
+                            code="constraint_range",
+                            category=DriftCategory.VALUE_CONSTRAINT,
+                            message=(
+                                f"{field_name} is below the configured minimum of {rule.min}"
+                            ),
+                            location=(field_name,),
+                            input_value=_to_json_safe(value),
+                        )
+                    )
+                if rule.max is not None and number > rule.max:
+                    issues.append(
+                        ValidationIssue(
+                            code="constraint_range",
+                            category=DriftCategory.VALUE_CONSTRAINT,
+                            message=(
+                                f"{field_name} is above the configured maximum of {rule.max}"
+                            ),
+                            location=(field_name,),
+                            input_value=_to_json_safe(value),
+                        )
+                    )
+        if (
+            rule.pattern is not None
+            and _compile_field_pattern(rule.pattern).fullmatch(_field_text(value)) is None
+        ):
+            issues.append(
+                ValidationIssue(
+                    code="constraint_pattern",
+                    category=DriftCategory.VALUE_CONSTRAINT,
+                    message=f"{field_name} does not match the configured pattern",
+                    location=(field_name,),
+                    input_value=_to_json_safe(value),
+                )
+            )
+    return issues
+
+
 def _transform_issues(
     failures: tuple[TransformFailure, ...],
 ) -> tuple[ValidationIssue, ...]:
@@ -456,11 +609,20 @@ def validate_record_value(
         record = model.__pydantic_validator__.validate_python(value)
     except ValidationError as exc:
         return None, _validation_issues(exc), ()
-    if constraints is not None and not isinstance(record, FinancialTransaction):
+    if (
+        constraints is not None
+        and constraints.has_builtin_keys()
+        and not isinstance(record, FinancialTransaction)
+    ):
         raise TypeError("business constraints are only supported by the built-in schema")
-    issues = _configured_constraint_issues(record, constraints)
+    issues: list[ValidationIssue] = []
+    if isinstance(record, FinancialTransaction):
+        issues.extend(_configured_constraint_issues(record, constraints))
+    if constraints is not None and constraints.field_rules:
+        dumped = record.model_dump() if hasattr(record, "model_dump") else dict(record)
+        issues.extend(_field_rule_issues(dumped, constraints.field_rules))
     if issues:
-        return None, issues, ()
+        return None, tuple(issues), ()
     return record, (), normalized_fields
 
 

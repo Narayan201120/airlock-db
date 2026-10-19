@@ -249,12 +249,6 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
     sources: list[Any] = [*inputs, *database_sources]
     if not sources:
         parser.error("at least one --input or --source-db is required")
-    if args.config and args.constraints:
-        return _fail(
-            "--constraints cannot be combined with --config; pass the flags the "
-            "original run used",
-            2,
-        )
 
     try:
         input_encoding = check_text_encoding(args.input_encoding)
@@ -278,6 +272,16 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             constraints = ValidationConstraints.from_file(args.constraints)
         except ConstraintConfigError as exc:
             return _fail(str(exc), 2)
+    if (
+        dynamic_schema is not None
+        and constraints is not None
+        and constraints.has_builtin_keys()
+    ):
+        return _fail(
+            "--constraints cannot be combined with --config unless the file "
+            "contains only field_rules; pass the flags the original run used",
+            2,
+        )
 
     summary: dict[str, Any] | None = None
     summary_path = output_directory / _SUMMARY_FILENAME

@@ -138,6 +138,9 @@ jobs:
       - name: Run-to-run comparison
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_run_compare.py ci-run-compare
+      - name: Dynamic schema constraints
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_dynamic_constraints.py ci-dynamic-constraints
       - name: XML equivalence
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_xml_equivalence.py \

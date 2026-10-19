@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Iterator
 from uuid import UUID, uuid4
 
-from .constraints import ValidationConstraints
+from .constraints import FieldRule, ValidationConstraints
 from .pipeline import DriftCategory, MigrationRecordResult
 
 
@@ -131,12 +131,45 @@ def _canonical_decimal(value: Decimal) -> str:
     return f"{sign}{coefficient}e{adjusted_exponent}"
 
 
+def _canonical_field_rule(rule: FieldRule) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if rule.field is not None:
+        payload["field"] = rule.field
+    if rule.enum:
+        items = [
+            _canonical_decimal(value) if isinstance(value, Decimal) else value
+            for value in rule.enum
+        ]
+        payload["enum"] = sorted(
+            items,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+    if rule.min is not None:
+        payload["min"] = _canonical_decimal(rule.min)
+    if rule.max is not None:
+        payload["max"] = _canonical_decimal(rule.max)
+    if rule.pattern is not None:
+        payload["pattern"] = rule.pattern
+    if rule.required_any_of:
+        payload["required_any_of"] = sorted(rule.required_any_of)
+    return payload
+
+
 def constraints_fingerprint(constraints: ValidationConstraints | None) -> str:
     if constraints is None:
         return "none"
     payload: dict[str, Any] = {}
     for field in fields(constraints):
         name = field.name
+        if name == "field_rules":
+            # Old logs predate field rules, so an empty rule set must stay out
+            # of the payload and keep every existing digest unchanged.
+            if constraints.field_rules:
+                payload[name] = sorted(
+                    (_canonical_field_rule(rule) for rule in constraints.field_rules),
+                    key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+                )
+            continue
         value = getattr(constraints, name)
         if isinstance(value, frozenset):
             payload[name] = sorted(value)

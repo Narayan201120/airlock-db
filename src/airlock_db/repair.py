@@ -424,8 +424,6 @@ def run_repair(
     try:
         if args.config:
             dynamic_schema = DynamicSchema.from_file(args.config)
-        if dynamic_schema is not None and args.constraints:
-            raise SchemaConfigError("--constraints cannot be combined with --config")
         if args.anonymize and dynamic_schema is not None and not dynamic_schema.anonymized_fields:
             raise SchemaConfigError("--anonymize with --config requires fields marked anonymize: true")
         constraints = (
@@ -433,6 +431,15 @@ def run_repair(
             if args.constraints
             else None
         )
+        if (
+            dynamic_schema is not None
+            and constraints is not None
+            and constraints.has_builtin_keys()
+        ):
+            raise SchemaConfigError(
+                "--constraints cannot be combined with --config unless the file "
+                "contains only field_rules"
+            )
     except (SchemaConfigError, ConstraintConfigError) as exc:
         print(f"airlock-db repair: {exc}", file=sys.stderr)
         return 2
