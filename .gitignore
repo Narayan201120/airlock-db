@@ -18,6 +18,9 @@ airlock_report.html
 airlock_summary.json
 airlock_errors.jsonl
 
+# CI and sweep scratch directories
+ci-*/
+
 # Tooling caches
 .pytest_cache/
 .mypy_cache/

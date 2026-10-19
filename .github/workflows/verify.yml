@@ -210,3 +210,49 @@ jobs:
           grep -q 'Resumed: 32' ci-resume.log
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-checkpoint \
             --expected-checked 32 --expected-valid 8 --expected-invalid 24 --expected-rows 8
+      - if: matrix.os == 'ubuntu-latest'
+        name: Air-gap wheelhouse
+        run: |
+          set -euo pipefail
+          rm -rf ci-wheelhouse ci-venv ci-wheelhouse-missing ci-wheelhouse-corrupt ci-wheelhouse-sdist ci-airgap
+          python -m pip wheel --no-deps --wheel-dir ci-wheelhouse .
+          python -m pip download --only-binary=:all: --dest ci-wheelhouse pydantic "PyYAML>=6,<7"
+          python scripts/check_wheelhouse.py ci-wheelhouse
+          python scripts/check_wheelhouse.py ci-wheelhouse --verify
+          python -m venv ci-venv
+          if [ -x ci-venv/bin/python ]; then venv_bin=ci-venv/bin; else venv_bin=ci-venv/Scripts; fi
+          "$venv_bin/python" -m pip install --no-index --find-links ci-wheelhouse airlock-db
+          set +e
+          "$venv_bin/python" -m airlock_db --input examples/messy_transactions.json --output-dir ci-airgap
+          code=$?
+          set -e
+          test "$code" -eq 1
+          test -f ci-airgap/airlock_summary.json
+          test -f ci-airgap/airlock_report.html
+          "$venv_bin/airlock-db" --help > /dev/null
+          python scripts/check_wheelhouse.py ci-wheelhouse --verify
+          # A wheelhouse without the local wheel fails the closure check.
+          cp -r ci-wheelhouse ci-wheelhouse-missing
+          rm ci-wheelhouse-missing/airlock_db-*.whl
+          set +e
+          python scripts/check_wheelhouse.py ci-wheelhouse-missing
+          missing=$?
+          set -e
+          test "$missing" -eq 1
+          # A changed byte fails manifest verification.
+          cp -r ci-wheelhouse ci-wheelhouse-corrupt
+          changed_wheel=$(ls ci-wheelhouse-corrupt/*.whl | grep -v '/airlock_db-' | tail -n 1)
+          printf 'x' | dd of="$changed_wheel" bs=1 seek=100 conv=notrunc status=none
+          set +e
+          python scripts/check_wheelhouse.py ci-wheelhouse-corrupt --verify
+          changed=$?
+          set -e
+          test "$changed" -eq 1
+          # A non-wheel file fails the check with the documented message.
+          cp -r ci-wheelhouse ci-wheelhouse-sdist
+          : > ci-wheelhouse-sdist/example-package-1.0.tar.gz
+          set +e
+          python scripts/check_wheelhouse.py ci-wheelhouse-sdist
+          sdist=$?
+          set -e
+          test "$sdist" -eq 1

@@ -156,12 +156,12 @@ Current state: v0.3.0 shipped all of Tier 2, Tier 3, and Tier 4: report regenera
 - Scope: declarative JSON only; the built-in keys stay as they are, and `field_rules` apply to the built-in model and to dynamic ones. The fingerprint covers the full parsed file in canonical key order, so repair resume keeps working; an empty rule set leaves every existing digest unchanged.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dynamic_constraints.py` runs a dynamic migration with the rules and requires exactly the predicted rejections per reason (2 enum, 2 range, 1 pattern, 1 required-any-of) with the exact messages, a clean run over valid rows, absent/null/empty-string edge cases, six bad rules files (including an entry that mixes `required_any_of` with field keys) that all stop the run with exit 2, the combination rule at migration, repair, and verify, a repair session that accepts the same fingerprint and rejects a variant, and verify with and without the rules file (7 scenarios). Wired into CI.
 
-### 23. Air-gap deployment kit
+### 23. Air-gap deployment kit (shipped)
 
 - What: `scripts/check_wheelhouse.py` inspects an offline wheelhouse directory and confirms it covers `airlock-db` and its dependencies from wheel filenames and metadata, then writes an install manifest with sizes and hashes. `docs/deployment.md` documents the two-machine transfer: stage on a connected machine, verify, move, install with `--no-index`.
 - Why: the install story is one README paragraph today. A kit that is checked before the jump and written down removes the guesswork.
 - Scope: the checker is fully offline and reads the directory only. The single network step is the documented, user-run `pip download` on the connected side.
-- Verification: a CI step builds a wheelhouse with `pip download`, runs the checker, installs from it into a clean venv with `--no-index`, and runs one migration. Ubuntu-only, mirroring the soak step. Wired into CI.
+- Verification: the `Air-gap wheelhouse` CI step builds the local wheel and the dependency closure with `pip download`, runs `scripts/check_wheelhouse.py` and requires the manifest to verify on later passes, installs with `--no-index` into a clean virtual environment, runs one migration from the installed package, and requires three negative paths to exit 1: a wheelhouse without the local wheel, a changed byte under `--verify`, and a stray source distribution. Ubuntu-only, mirroring the soak step. Wired into CI.
 
 ## Explicitly out of scope
 
