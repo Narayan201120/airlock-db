@@ -4,6 +4,7 @@
 
 - Load a client schema from JSON or YAML with `--config`.
 - Reject undocumented fields and validate configured field types and limits.
+- Guard fields with `field_rules` beside the schema config (see [Constraints for dynamic schemas](dynamic-constraints.md)).
 - Store records in a schema-specific SQLite table.
 - Pseudonymize declared string fields with `--anonymize`.
 
