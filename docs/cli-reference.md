@@ -1,6 +1,6 @@
 # CLI reference
 
-Options, outputs, limits, and configuration formats. See [the repair guide](repair.md) for the interactive workflow and [the README](../README.md) for setup and quick start.
+Options, outputs, limits, and configuration formats. See [the guide](guide.md) for the repair workflow and the air-gap transfer, and [the README](../README.md) for setup and quick start.
 
 ## Options
 
@@ -234,7 +234,7 @@ To use `--anonymize` with a dynamic layout, mark one or more eligible string fie
 
 ### Air-gapped installs
 
-Include the PyYAML wheel alongside Pydantic in the approved local wheelhouse before installing the project with `--no-index`.
+Include the PyYAML wheel alongside Pydantic in the approved local wheelhouse before installing the project with `--no-index`. The [guide](guide.md#moving-an-install-into-an-air-gapped-machine) walks the two-machine transfer.
 
 ## Verifying a migration handoff
 

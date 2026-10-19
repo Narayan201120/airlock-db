@@ -8,6 +8,7 @@ Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report re
 - Every feature lands with an end-to-end check wired into CI before its commit.
 - The report stays a single self-contained file with no scripts or external assets.
 - No network behavior, no telemetry.
+- Documentation stays in `docs/guide.md` and `docs/cli-reference.md`. A new feature updates those sections instead of adding another file.
 
 ## Tier 1: shipped in v0.1.1
 
@@ -158,7 +159,7 @@ Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report re
 
 ### 23. Air-gap deployment kit
 
-- What: `scripts/check_wheelhouse.py` inspects an offline wheelhouse directory and confirms it covers `airlock-db` and its dependencies from wheel filenames and metadata, then writes an install manifest with sizes and hashes. `docs/deployment.md` documents the two-machine transfer: stage on a connected machine, verify, move, install with `--no-index`.
+- What: `scripts/check_wheelhouse.py` inspects an offline wheelhouse directory and confirms it covers `airlock-db` and its dependencies from wheel filenames and metadata, then writes an install manifest with sizes and hashes. [The guide](guide.md) documents the two-machine transfer: stage on a connected machine, verify, move, install with `--no-index`.
 - Why: the install story is one README paragraph today. A kit that is checked before the jump and written down removes the guesswork.
 - Scope: the checker is fully offline and reads the directory only. The single network step is the documented, user-run `pip download` on the connected side.
 - Verification: the `Air-gap wheelhouse` CI step builds the local wheel and the dependency closure with `pip download`, runs `scripts/check_wheelhouse.py` and requires the manifest to verify on later passes, installs with `--no-index` into a clean virtual environment, runs one migration from the installed package, and requires three negative paths to exit 1: a wheelhouse without the local wheel, a changed byte under `--verify`, and a stray source distribution. Ubuntu-only, mirroring the soak step. Wired into CI.
