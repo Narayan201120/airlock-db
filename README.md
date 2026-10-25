@@ -286,6 +286,7 @@ Related options:
 
 - `repair --emit-decisions decisions.jsonl` writes an inert template with one `skip` line per repairable entry. Edit it to script fixes. It refuses to replace an existing file without `--overwrite`.
 - `repair --decisions decisions.jsonl` applies a decisions file.
+- `repair --error-log output/airlock_errors.jsonl --summary` prints entry, repairability, raw-row, and issue-category counts without opening a session or writing.
 - `python main.py report --output-dir output` rebuilds the report with a Repair outcomes section.
 
 Resume and checkpoint rules are in [the guide](docs/guide.md#resume-and-checkpoints).

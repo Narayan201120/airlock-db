@@ -118,6 +118,12 @@ The rejected-row sidecar is opt in. Without `--anonymize`, it contains rejected 
 
 The sidecar is capped at 100,000 rejected records and 256 MiB. Each entry is capped at 8 MiB, its completion marker reports omitted records, and each row's issue trace is capped at 100 entries.
 
+To inspect a log without opening a repair session, run `repair --error-log PATH --summary`. It prints the entry count, the repairable and non-repairable counts, how many entries have no stored raw row, the issue occurrences per category, and the log's completion state, then exits. It reads only the log, creates no database, checkpoint, or staging file, and refuses flags that select an action or an output. A missing, cut-off, or invalid log exits `2`. The output ends with a machine-readable line:
+
+```text
+repair_summary entries=24 repairable=24 non_repairable=0 raw_rows_omitted=0 issue_occurrences=26 issues_truncated=0 omitted_records=0 complete=1
+```
+
 ## Streaming and record limits
 
 Input files are read incrementally. Top-level JSON arrays, JSONL/NDJSON lines, and XML record elements are decoded one record at a time. The whole source file is never loaded at once.

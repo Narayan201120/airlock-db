@@ -123,6 +123,9 @@ jobs:
           python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --error-log --output-dir ci-repair || test $? -eq 1
           printf 'd\nd\nq\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q '0 corrected, 2 dropped'
           printf 'q\n' | python main.py repair --error-log ci-repair/airlock_errors.jsonl --constraints examples/constraints.json | grep -q 'Resumed: 2'
+      - name: Repair log summary
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_repair_summary.py ci-repair-summary
       - name: Scripted repair decisions and report refresh
         run: |
           python main.py --input examples/messy_transactions.json --constraints examples/constraints.json --error-log --output-dir ci-decisions || test $? -eq 1

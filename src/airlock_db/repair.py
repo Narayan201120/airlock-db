@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -69,11 +70,12 @@ def _build_repair_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-db", metavar="PATH", help="SQLite target (default: target_migration.db beside the error log)")
     parser.add_argument("--batch-size", type=_positive_integer, default=500, help="SQLite write batch size")
     parser.add_argument("--conflict-policy", choices=("skip", "replace"), default="skip")
-    parser.add_argument("--anonymize", action="store_true", help="pseudonymize configured sensitive fields before storage")
+    parser.add_argument("--anonymize", action="store_true", default=None, help="pseudonymize configured sensitive fields before storage")
     parser.add_argument("--decisions", metavar="PATH", help="apply a JSONL decisions file instead of an interactive session")
     parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=None,
         help="with --decisions: print the planned outcome of every entry without writing anything",
     )
     parser.add_argument(
@@ -81,7 +83,12 @@ def _build_repair_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="write a decisions template with one inert 'skip' line per repairable entry, then exit without opening a session",
     )
-    parser.add_argument("--overwrite", action="store_true", help="replace an existing --emit-decisions template")
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="print counts and issue categories from the log, then exit without opening a session or writing",
+    )
+    parser.add_argument("--overwrite", action="store_true", default=None, help="replace an existing --emit-decisions template")
     return parser
 
 
@@ -411,11 +418,111 @@ def _preview_decisions(
     return 1 if failed else 0
 
 
+def _summarize_repair_log(path: Path) -> int:
+    try:
+        reader = RepairLogReader(path)
+        reader.__enter__()
+    except (OSError, RepairLogError) as exc:
+        print(f"airlock-db repair: cannot read repair log: {exc}", file=sys.stderr)
+        return 2
+
+    categories: Counter[str] = Counter()
+    entries = 0
+    repairable = 0
+    raw_rows_omitted = 0
+    issues_truncated = 0
+    try:
+        for entry in reader:
+            entries += 1
+            if entry["repairable"]:
+                repairable += 1
+            if entry["record"] is None:
+                raw_rows_omitted += 1
+            if entry["issues_truncated"]:
+                issues_truncated += 1
+            for issue in entry["issues"]:
+                categories[str(issue.get("category") or "unknown")] += 1
+        header = reader.header or {}
+        trailer = reader.trailer
+    except (OSError, RepairLogError) as exc:
+        print(f"airlock-db repair: cannot read repair log: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        reader.close()
+
+    if trailer is None:
+        print("airlock-db repair: repair log has no completion marker", file=sys.stderr)
+        return 2
+
+    print(f"Repair log: {path}")
+    print(
+        f"Schema: {header.get('schema_name')} "
+        f"(fingerprint {header.get('schema_fingerprint')})"
+    )
+    print(f"Constraints fingerprint: {header.get('constraints_fingerprint')}")
+    print(f"Anonymized: {'yes' if header.get('anonymized') else 'no'}")
+    print(f"Entries: {entries}")
+    print(f"Repairable: {repairable}; non-repairable: {entries - repairable}")
+    print(f"Raw rows omitted: {raw_rows_omitted}")
+    if categories:
+        breakdown = ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(
+                categories.items(), key=lambda item: (-item[1], item[0])
+            )
+        )
+        print(f"Issues: {breakdown}")
+    else:
+        print("Issues: none")
+    if issues_truncated:
+        print(f"Issues truncated: {issues_truncated} entries")
+    if trailer["truncated"]:
+        print(f"Log: truncated; omitted records: {trailer['omitted_records']}")
+    elif not trailer["complete"]:
+        print("Log: incomplete (the migration stopped before the end)")
+    else:
+        print("Log: complete")
+    print(
+        f"repair_summary entries={entries} repairable={repairable} "
+        f"non_repairable={entries - repairable} "
+        f"raw_rows_omitted={raw_rows_omitted} "
+        f"issue_occurrences={sum(categories.values())} "
+        f"issues_truncated={issues_truncated} "
+        f"omitted_records={trailer['omitted_records']} "
+        f"complete={1 if trailer['complete'] else 0}"
+    )
+    return 0
+
+
 def run_repair(
     args: argparse.Namespace,
     *,
     input_fn: Callable[[str], str] = input,
 ) -> int:
+    if getattr(args, "summary", False):
+        incompatible = [
+            flag
+            for flag, value in (
+                ("--config", args.config),
+                ("--constraints", args.constraints),
+                ("--output-db", args.output_db),
+                ("--decisions", args.decisions),
+                ("--dry-run", getattr(args, "dry_run", False)),
+                ("--emit-decisions", getattr(args, "emit_decisions", None)),
+                ("--anonymize", getattr(args, "anonymize", False)),
+                ("--overwrite", getattr(args, "overwrite", False)),
+            )
+            if value not in (None, False)
+        ]
+        if incompatible:
+            print(
+                "airlock-db repair: --summary cannot be combined with "
+                + ", ".join(incompatible),
+                file=sys.stderr,
+            )
+            return 2
+        return _summarize_repair_log(Path(args.error_log))
+
     if getattr(args, "dry_run", False) and not getattr(args, "decisions", None):
         print("airlock-db repair: --dry-run requires --decisions", file=sys.stderr)
         return 2

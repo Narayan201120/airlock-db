@@ -41,6 +41,31 @@ After installing the package, the same command is available as `schema-sentry re
 
 Do not add `--anonymize` to the migration if you intend to repair that log. Anonymized migrations omit rejected source values and redact issue details, so their entries are intentionally not repairable.
 
+### Size the job first
+
+`--summary` reads a log and prints what it contains, without opening a session:
+
+```powershell
+python main.py repair --error-log output/airlock_errors.jsonl --summary
+```
+
+```text
+Repair log: output/airlock_errors.jsonl
+Schema: FinancialTransaction (fingerprint financial-transaction-v1)
+Constraints fingerprint: 0c5bcff151bdd016a243d67ea70c61b63e8084528009cc739569c0d9fe139d5d
+Anonymized: no
+Entries: 24
+Repairable: 24; non-repairable: 0
+Raw rows omitted: 0
+Issues: value_constraint=17, extra_field=3, missing_field=3, new_enum_value=2, type_mismatch=1
+Log: complete
+repair_summary entries=24 repairable=24 non_repairable=0 raw_rows_omitted=0 issue_occurrences=26 issues_truncated=0 omitted_records=0 complete=1
+```
+
+`Raw rows omitted` counts entries with no stored raw row: anonymized logs, source-level parse errors, and records too large for the log. The last line is machine-readable. A truncated log reports how many records the sidecar left out, and an interrupted migration reports `complete=0`.
+
+`--summary` reads only the log. It creates no database, checkpoint, or staging file. Combining it with `--config`, `--constraints`, `--output-db`, `--decisions`, `--dry-run`, `--emit-decisions`, `--anonymize`, or `--overwrite` exits `2`. A missing, cut-off, or invalid log also exits `2`.
+
 ### Before any target is opened
 
 For a dynamic layout, pass the same `--config` used for the migration. If the migration used business constraints, pass the same `--constraints` file. Schema and constraint fingerprints are checked before any target is opened, and a mismatch stops the session.
