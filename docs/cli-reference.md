@@ -21,6 +21,7 @@ Options, outputs, limits, and configuration formats. See [the guide](guide.md) f
 | `--commit-every N` | Commit accepted records and save resumable progress every N records. Requires the SQLite target. |
 | `--resume` | Skip writing records at or below a saved checkpoint from an earlier `--commit-every` run. |
 | `--sample N` | Stop after N accepted records are written. The target holds only the scanned prefix, and the report, summary, and repair log record the preview. |
+| `--dry-run` | Read and validate every source, print counts and issue codes, and write nothing. Refuses `--error-log`, `--commit-every`, `--resume`, and `--sample`. |
 | `--error-log [PATH]` | Opt in to a bounded rejected-row JSONL log for repair. Relative paths land under the output directory. With no path, uses `airlock_errors.jsonl`. |
 | `--batch-size N` | SQLite write batch size, from 1 to 10,000. Defaults to 500. |
 | `--max-report-issues N` | Issue entries embedded in the report, from 0 to 10,000. Defaults to 1000. |
@@ -65,6 +66,22 @@ Resume requires the SQLite target, cannot be combined with `--anonymize` (pseudo
 `--sample N` stops a run after N accepted records are written, for a fast sanity check of a large source. The target, the report, and `airlock_summary.json` describe only the scanned prefix; the summary carries `records.sample_limit` and `records.sample_reached`, and the report shows a preview notice. A repair log written by a sampled run is marked incomplete, so `repair` warns that the log covers only part of the sources.
 
 A preview is not a handoff. `verify` against a sampled target reports the unscanned records as missing, by design; rerun without `--sample` before verifying.
+
+### Dry run
+
+`--dry-run` reads every source through the normal readers, transforms, and constraints, then prints the counts and issue codes without writing anything: no target, report, summary, checkpoint, or repair log. It does not create the output directory.
+
+```powershell
+python main.py --input C:\legacy\export.jsonl --config client_schema.yaml --dry-run
+```
+
+Exit codes match a migration: `0` when the sources are clean, `1` when records or sources have issues, and `2` for bad flags or configuration. The output ends with a machine-readable line:
+
+```text
+dry_run_result checked=32 valid=8 invalid=24 issue_occurrences=26 files_written=0
+```
+
+`--dry-run` cannot be combined with `--error-log`, `--commit-every`, `--resume`, or `--sample`, because each one writes a file or depends on a target. Configuration errors still fail before any record is read.
 
 ### CSV and TSV input
 

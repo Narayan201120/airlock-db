@@ -150,6 +150,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="stop after N accepted records are written (preview run: the target holds only the scanned prefix)",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate every source and print the outcome without writing a target, report, summary, checkpoint, or repair log",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="skip writing records already committed by an earlier --commit-every run",
@@ -501,6 +506,26 @@ def run_migration(args: argparse.Namespace) -> int:
     output_format = args.output_format
     use_sqlite = output_format in {"sqlite", "both"}
     use_jsonl = output_format in {"jsonl", "both"}
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        incompatible = [
+            flag
+            for flag, value in (
+                ("--error-log", getattr(args, "error_log", None)),
+                ("--commit-every", getattr(args, "commit_every", None)),
+                ("--resume", getattr(args, "resume", False)),
+                ("--sample", getattr(args, "sample", None)),
+            )
+            if value not in (None, False)
+        ]
+        if incompatible:
+            print(
+                f"airlock-db: --dry-run cannot be combined with {', '.join(incompatible)}",
+                file=sys.stderr,
+            )
+            return 2
+        use_sqlite = False
+        use_jsonl = False
     anonymizer = RunAnonymizer() if getattr(args, "anonymize", False) else None
     for database_source in database_sources:
         if _same_path(database_source.path, database_path):
@@ -606,13 +631,14 @@ def run_migration(args: argparse.Namespace) -> int:
         )
         return 2
 
-    try:
-        output_directory.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        display_path = output_directory.name if anonymizer else output_directory
-        details = type(exc).__name__ if anonymizer else str(exc)
-        print(f"airlock-db: cannot create output directory {display_path}: {details}", file=sys.stderr)
-        return 2
+    if not dry_run:
+        try:
+            output_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            display_path = output_directory.name if anonymizer else output_directory
+            details = type(exc).__name__ if anonymizer else str(exc)
+            print(f"airlock-db: cannot create output directory {display_path}: {details}", file=sys.stderr)
+            return 2
 
     repair_log_path: Path | None = None
     repair_log: RepairLogWriter | None = None
@@ -681,7 +707,11 @@ def run_migration(args: argparse.Namespace) -> int:
     storage_error: str | None = None
     store: SQLiteTargetStore | DynamicSQLiteTargetStore | None = None
     storage_summary: dict[str, object] = {
-        "status": "failed" if use_sqlite else "not used (JSONL output)",
+        "status": (
+            "not used (dry run)"
+            if dry_run
+            else ("failed" if use_sqlite else "not used (JSONL output)")
+        ),
         "database": "target_migration.db" if anonymizer else str(database_path),
         "table": (
             dynamic_schema.table_name if dynamic_schema else "transactions"
@@ -800,7 +830,7 @@ def run_migration(args: argparse.Namespace) -> int:
                 csv_delimiter=getattr(args, "csv_delimiter", None),
                 csv_encoding=getattr(args, "csv_encoding", None),
                 input_encoding=input_encoding,
-                source_manifest=source_manifest,
+                source_manifest=None if dry_run else source_manifest,
             ):
                 resumed_here = (
                     resume
@@ -1092,6 +1122,34 @@ def run_migration(args: argparse.Namespace) -> int:
             or pipeline_failed
             else 0
         )
+
+    if dry_run:
+        print("Dry run: no files were written.")
+        print(f"Records checked: {metrics.records_seen}")
+        print(f"Valid: {metrics.valid_records}; invalid: {metrics.invalid_records}")
+        print(
+            f"Source errors: {metrics.file_errors}; "
+            f"incomplete files: {metrics.incomplete_files}"
+        )
+        issue_total = sum(metrics.error_counts.values())
+        if issue_total:
+            breakdown = ", ".join(
+                f"{code}={count}"
+                for code, count in sorted(
+                    metrics.error_counts.items(), key=lambda item: (-item[1], item[0])
+                )
+            )
+            print(f"Issues: {breakdown}")
+        else:
+            print("Issues: none")
+        if metrics.normalized_fields:
+            print(f"Normalized fields: {metrics.normalized_fields}")
+        print(
+            f"dry_run_result checked={metrics.records_seen} "
+            f"valid={metrics.valid_records} invalid={metrics.invalid_records} "
+            f"issue_occurrences={issue_total} files_written=0"
+        )
+        return exit_code
 
     try:
         report_notices: list[str] = []

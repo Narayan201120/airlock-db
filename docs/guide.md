@@ -2,6 +2,22 @@
 
 Workflow guides for the tasks around a migration. Every option, format, and limit lives in the [CLI reference](cli-reference.md); setup and the quick start are in the [README](../README.md).
 
+## Preflighting a migration
+
+A dry run reads every source, applies the schema, transforms, and constraints, and writes nothing. Use it to prove a layout or an encoding against a full export before a long run:
+
+```powershell
+python main.py --input C:\legacy\export.jsonl --config client_schema.yaml --dry-run
+```
+
+The output ends with the counts and a machine-readable line:
+
+```text
+dry_run_result checked=32 valid=8 invalid=24 issue_occurrences=26 files_written=0
+```
+
+Exit code `0` means the sources are clean, `1` means rejected rows or source issues, and `2` means bad flags or configuration. The output directory is not created. `--error-log`, `--commit-every`, `--resume`, and `--sample` are refused because they write a file or depend on a target.
+
 ## Repairing rejected rows
 
 Rejected rows get a second pass. A migration can write a repair log of every rejected record, and the `repair` command reviews that log, revalidates corrections, and commits accepted fixes to SQLite.

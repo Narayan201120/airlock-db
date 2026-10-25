@@ -98,6 +98,7 @@ Use a fresh output directory for each run. Existing rows count as duplicates or 
 | `--constraints JSON` | Extra business rules. Built-in keys serve the built-in schema; `field_rules` serves dynamic schemas |
 | `--output-dir DIR` | Output directory. Default `output` |
 | `--output-format` | `sqlite` (default), `jsonl`, or `both` |
+| `--dry-run` | Validate every source and write nothing |
 | `--conflict-policy` | `skip` (default) or `replace` existing record IDs |
 | `--batch-size N` | SQLite write batch, 1 to 10,000. Default 500 |
 | `--max-report-issues N` | Issues embedded in the report, 0 to 10,000. Default 1000 |
@@ -193,6 +194,14 @@ python main.py --input C:\legacy\big.jsonl --commit-every 50000 --resume --outpu
 - Both options need the SQLite target.
 - `--resume` cannot combine with `--anonymize`, because pseudonyms are run-scoped.
 - `--resume` skips writes only when the source file is unchanged (same size and modification time).
+
+#### Check a large source before writing
+
+```powershell
+python main.py --input C:\legacy\big.jsonl --dry-run
+```
+
+Counts and issue codes print to the terminal. No target, report, or summary is written.
 
 #### Preview before the full run
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, richer reports, compressed inputs, schema inference, target verification, preview runs and SQL source queries, and a memory soak at 1M rows. Tier 5 adds per-field transforms, fixed-width input, JSONL-only target verification, a source manifest in the run summary, a scripted-decisions dry run, an input encoding override, run-to-run report comparison, business rules for dynamic schemas, and an air-gap deployment kit. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV and archives, multi-table and custom-query source databases, schema inference, target verification, repair resume, scripted decisions with report refresh, a decisions dry-run, preview runs, checkpoint/resume, XML equivalence, source manifests, input encodings, run comparison, dynamic constraints, the air-gap wheelhouse, and a reduced memory soak) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
+Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report regeneration and scripted repair decisions, multi-table and CSV/TSV ingestion, resumable migrations, richer reports, compressed inputs, schema inference, target verification, preview runs and SQL source queries, and a memory soak at 1M rows. Tier 5 adds per-field transforms, fixed-width input, JSONL-only target verification, a source manifest in the run summary, a scripted-decisions dry run, an input encoding override, run-to-run report comparison, business rules for dynamic schemas, and an air-gap deployment kit. Tier 6 adds preflight diagnostics: a migration dry run, a configuration check, and a repair-log summary. The GitHub Actions workflow runs the full end-to-end suite (fixture migration, real-data sample, JSONL target, CSV and archives, multi-table and custom-query source databases, schema inference, target verification, repair resume, scripted decisions with report refresh, a decisions dry-run, preview runs, checkpoint/resume, XML equivalence, source manifests, input encodings, run comparison, dynamic constraints, the air-gap wheelhouse, and a reduced memory soak) on every push, on Linux and Windows. Version tags build the wheel and sdist and attach them to the GitHub release.
 
 ## Ground rules
 
@@ -164,6 +164,29 @@ Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report re
 - Scope: the checker is fully offline and reads the directory only. The single network step is the documented, user-run `pip download` on the connected side.
 - Verification: the `Air-gap wheelhouse` CI step builds the local wheel and the dependency closure with `pip download`, runs `scripts/check_wheelhouse.py` and requires the manifest to verify on later passes, installs with `--no-index` into a clean virtual environment, runs one migration from the installed package, and requires three negative paths to exit 1: a wheelhouse without the local wheel, a changed byte under `--verify`, and a stray source distribution. Ubuntu-only, mirroring the soak step. Wired into CI.
 
+## Tier 6: preflight diagnostics
+
+### 24. Migration dry run (shipped)
+
+- What: `--dry-run` reads every source through the normal readers, transforms, and constraints, then prints counts and issue codes without writing a target, report, summary, checkpoint, or repair log. It does not create the output directory.
+- Why: a full export can take hours to migrate. Operators need to prove the layout, encoding, and constraints before the write starts.
+- Scope: exit codes match a migration (`0` clean, `1` rejected rows or source errors, `2` bad flags or configuration). It refuses `--error-log`, `--commit-every`, `--resume`, and `--sample`, because each writes a file or depends on a target.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dry_run.py` requires a clean source to exit 0 with no output directory, the messy fixture to exit 1 with the real counts (32 checked, 8 valid, 24 invalid, 26 issue occurrences), a real run to report the same counts, an existing output directory to stay byte-identical, every write flag to exit 2, a bad config and a missing source to write nothing, and `--output-format jsonl` to produce no JSONL target (8 scenarios). Wired into CI.
+
+### 25. Configuration check command
+
+- What: `airlock-db check` loads `--config`, `--constraints`, and `--fixed-width` files, applies the same cross-file rules as a migration, and prints field, transform, rule, and layout counts plus both fingerprints. It reads no input and writes nothing.
+- Why: a configuration typo should fail in a second, not after a source scan. Repair sessions also need the fingerprints the check prints.
+- Scope: at least one file is required; any load or cross-file error exits 2 with the existing message. No new file formats.
+- Verification: a script drives every valid file kind, each bad file, a built-in constraints file, and the mixed `field_rules` plus built-in keys case, and requires that no files are written.
+
+### 26. Repair log summary
+
+- What: `repair --error-log PATH --summary` prints the log's entry count, repairable and non-repairable counts, raw-row-limited entries, and issue categories, then exits without a prompt or a write.
+- Why: sizing a repair job currently means opening a session and quitting it.
+- Scope: read-only, with no database, checkpoint, or staging file created. A missing or unreadable log exits 2.
+- Verification: a script builds logs with mixed entries, an anonymized log, and a truncated log, requires the exact counts, and requires no database or staging file to appear.
+
 ## Explicitly out of scope
 
 - XLSX ingestion. The dependency cost is too high; the preparation-script pattern covers it.
@@ -172,4 +195,4 @@ Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report re
 
 ## Sequencing
 
-Items 1 and 2 are small and pay off immediately. Item 3 unlocks item 4, which closes the repair-versus-report gap. Items 5 and 6 deepen the two operational stories: repair and legacy databases. Tier 5 runs in the picked order: normalization rules, fixed-width input, JSONL verification, the audit manifest, and decisions dry-run first; then the input encoding override, run comparison, dynamic constraints, and the deployment kit. Each item stands alone and lands as its own verified commit.
+Items 1 and 2 are small and pay off immediately. Item 3 unlocks item 4, which closes the repair-versus-report gap. Items 5 and 6 deepen the two operational stories: repair and legacy databases. Tier 5 runs in the picked order: normalization rules, fixed-width input, JSONL verification, the audit manifest, and decisions dry-run first; then the input encoding override, run comparison, dynamic constraints, and the deployment kit. Tier 6 runs in order: the migration dry run, the configuration check, then the repair-log summary. Each item stands alone and lands as its own verified commit.
