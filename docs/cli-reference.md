@@ -253,6 +253,28 @@ To use `--anonymize` with a dynamic layout, mark one or more eligible string fie
 
 Include the PyYAML wheel alongside Pydantic in the approved local wheelhouse before installing the project with `--no-index`. The [guide](guide.md#moving-an-install-into-an-air-gapped-machine) walks the two-machine transfer.
 
+## Checking configuration
+
+`check` loads configuration files without reading input and writes nothing:
+
+```powershell
+python main.py check --config client_schema.yaml --constraints field_rules.json --fixed-width layout.yaml
+```
+
+Pass at least one of `--config`, `--constraints`, or `--fixed-width`. The command uses the same loaders and cross-file rules as a migration: a schema file combined with a constraints file that carries built-in keys is refused, because built-in rules belong to the built-in schema. Every file loads before anything prints, so a bad file produces one error and no partial report.
+
+The output names the schema, the rule counts, the layout details, and the fingerprints that the repair log and the run summary record:
+
+```text
+Schema: SupportTicket (6 fields, 0 transforms, fingerprint eff366dfaab0237e)
+Constraints: 0 built-in rules, 4 field rules (fingerprint 7d7e4fd1f678ca9c376db5e456b735d9618c2eaa02f97a1cd1dc98b693b2f4a9)
+Layout: 3 fields, encoding utf-8-sig, skip_lines 1, record_length 38
+Check: configuration is valid. No files were written.
+check_ok schema=dynamic schema_fields=6 transforms=0 builtin_rules=0 field_rules=4 layout_fields=3
+```
+
+Exit codes: `0` valid, `2` a bad flag or a file that does not load. No input is read, so no source, target, report, or output directory is created.
+
 ## Verifying a migration handoff
 
 After a run, `verify` reconciles the committed target database with the sources that produced it:

@@ -18,6 +18,14 @@ dry_run_result checked=32 valid=8 invalid=24 issue_occurrences=26 files_written=
 
 Exit code `0` means the sources are clean, `1` means rejected rows or source issues, and `2` means bad flags or configuration. The output directory is not created. `--error-log`, `--commit-every`, `--resume`, and `--sample` are refused because they write a file or depend on a target.
 
+Check the configuration on its own, without a source:
+
+```powershell
+python main.py check --config client_schema.yaml --constraints field_rules.json --fixed-width layout.yaml
+```
+
+The command loads each file with the migration's own loaders, prints the field, transform, rule, and layout counts plus both fingerprints, and writes nothing. It exits `2` on the first bad file and prints no partial schema line. The fingerprints let you compare a repair session with the run that produced its log.
+
 ## Repairing rejected rows
 
 Rejected rows get a second pass. A migration can write a repair log of every rejected record, and the `repair` command reviews that log, revalidates corrections, and commits accepted fixes to SQLite.

@@ -173,12 +173,12 @@ Current state: v0.4.0 shipped all of Tier 5. Tiers 2 through 4 brought report re
 - Scope: exit codes match a migration (`0` clean, `1` rejected rows or source errors, `2` bad flags or configuration). It refuses `--error-log`, `--commit-every`, `--resume`, and `--sample`, because each writes a file or depends on a target.
 - Verification: `.cursor/skills/verify-airlock-db/scripts/verify_dry_run.py` requires a clean source to exit 0 with no output directory, the messy fixture to exit 1 with the real counts (32 checked, 8 valid, 24 invalid, 26 issue occurrences), a real run to report the same counts, an existing output directory to stay byte-identical, every write flag to exit 2, a bad config and a missing source to write nothing, and `--output-format jsonl` to produce no JSONL target (8 scenarios). Wired into CI.
 
-### 25. Configuration check command
+### 25. Configuration check command (shipped)
 
 - What: `airlock-db check` loads `--config`, `--constraints`, and `--fixed-width` files, applies the same cross-file rules as a migration, and prints field, transform, rule, and layout counts plus both fingerprints. It reads no input and writes nothing.
 - Why: a configuration typo should fail in a second, not after a source scan. Repair sessions also need the fingerprints the check prints.
 - Scope: at least one file is required; any load or cross-file error exits 2 with the existing message. No new file formats.
-- Verification: a script drives every valid file kind, each bad file, a built-in constraints file, and the mixed `field_rules` plus built-in keys case, and requires that no files are written.
+- Verification: `.cursor/skills/verify-airlock-db/scripts/verify_config_check.py` drives a schema, a field-rules file, and a fixed-width layout together; a config with transforms; the built-in constraints file; each bad file; the mixed built-in plus dynamic rule; no flags; and a missing file. It requires the counts, the valid notice, dynamic fingerprint parity with a real migration summary, exit 2 for each failure, and no partial schema line (7 scenarios). Wired into CI.
 
 ### 26. Repair log summary
 

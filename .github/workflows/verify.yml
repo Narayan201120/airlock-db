@@ -135,6 +135,9 @@ jobs:
       - name: Migration dry run
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_dry_run.py ci-dry-run
+      - name: Configuration check
+        run: |
+          python .cursor/skills/verify-airlock-db/scripts/verify_config_check.py ci-config-check
       - name: Input encoding override
         run: |
           python .cursor/skills/verify-airlock-db/scripts/verify_input_encoding.py ci-input-encoding

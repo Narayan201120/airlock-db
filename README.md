@@ -82,6 +82,7 @@ Use a fresh output directory for each run. Existing rows count as duplicates or 
 | --- | --- |
 | `airlock-db` | Migrate sources into the target |
 | `airlock-db infer` | Draft a schema config from source files |
+| `airlock-db check` | Validate schema, constraints, and fixed-width files without input |
 | `airlock-db verify` | Check a finished target against its sources |
 | `airlock-db repair` | Fix rejected rows interactively or from a decisions file |
 | `airlock-db report` | Rebuild the HTML report from an output directory |
@@ -231,6 +232,16 @@ python main.py --input legacy/tickets.json --config examples/schema_config.json 
 python main.py infer --input legacy/tickets.json --output schema_draft.yaml
 python main.py --input legacy/tickets.json --config schema_draft.yaml --output-dir ticket-output
 ```
+
+#### Check a schema before you run
+
+`check` loads a schema, constraints file, or fixed-width layout with the migration's own loaders, then prints the counts and fingerprints. It reads no input and writes nothing.
+
+```powershell
+python main.py check --config schema_draft.yaml --constraints field_rules.json
+```
+
+A bad file exits `2` before any source is read.
 
 #### Verify a handoff
 

@@ -56,7 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="airlock-db",
         description="Validate local JSON, JSONL, NDJSON, XML, CSV, or TSV records and migrate valid records to SQLite.",
         epilog=(
-            "Use `airlock-db infer --input PATH` to draft a dynamic schema from "
+            "Use `airlock-db check --config PATH` to validate configuration files, "
+            "`airlock-db infer --input PATH` to draft a dynamic schema from "
             "legacy data, `airlock-db verify --input PATH --output-dir DIR` to "
             "reconcile a committed target with its sources, `airlock-db repair "
             "--error-log PATH` to review rejected records interactively, and "
@@ -1295,6 +1296,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             format="%(levelname)s: %(message)s",
         )
         return refresh_main(arguments[1:])
+    if arguments and arguments[0] == "check":
+        from .config_check import check_main
+
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(levelname)s: %(message)s",
+        )
+        return check_main(arguments[1:])
     parser = _build_parser()
     args = parser.parse_args(arguments)
     if not args.input and not args.source_db:
