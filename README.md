@@ -1,6 +1,6 @@
 # AirLock DB
 
-Local-first migration tool for air-gapped environments. It reads legacy files, validates every record against a strict schema, writes accepted records to SQLite, and produces one self-contained HTML report.
+Local-first migration tool for air-gapped environments. It reads legacy files, validates every record against a strict schema, writes accepted records to SQLite or a JSONL file, and produces one self-contained HTML report.
 
 - Makes no network requests.
 - Embeds CSS and SVG in the report, so it opens on a workstation with no internet access.
@@ -53,6 +53,8 @@ In an air-gapped environment, stage the Pydantic and PyYAML wheels in an approve
 python -m pip install --no-index --find-links C:\offline\wheelhouse .
 ```
 
+The [guide](docs/guide.md#moving-an-install-into-an-air-gapped-machine) covers staging the wheelhouse, the manifest check, and the move to the offline machine.
+
 From a source checkout, `python main.py` works directly if Pydantic 2 is installed. Every `airlock-db` command below also runs as `python main.py`.
 
 ## Quick start
@@ -93,7 +95,7 @@ Use a fresh output directory for each run. Existing rows count as duplicates or 
 | `--input PATH` | File, archive, or directory. Repeatable |
 | `--source-db PATH` | Local SQLite database as a source. Repeatable |
 | `--config PATH` | JSON or YAML schema layout |
-| `--constraints JSON` | Extra business rules. Built-in schema only |
+| `--constraints JSON` | Extra business rules. Built-in keys serve the built-in schema; `field_rules` serves dynamic schemas |
 | `--output-dir DIR` | Output directory. Default `output` |
 | `--output-format` | `sqlite` (default), `jsonl`, or `both` |
 | `--conflict-policy` | `skip` (default) or `replace` existing record IDs |
@@ -230,8 +232,8 @@ python main.py verify --input legacy/tickets.json --config schema_draft.yaml --o
 ```
 
 - Pass the same source and schema flags as the original run.
-- Exit code `0` means the database matches the sources under the recorded duplicate policy. Exit code `1` means a mismatch or a missing target database. Exit code `2` means bad flags or config files.
-- JSONL-only runs have no database, so `verify` refuses them.
+- Exit code `0` means the target matches the sources under the recorded conflict policy. Exit code `1` means a mismatch or a missing target. Exit code `2` means bad flags or config files.
+- A JSONL-only run is verified from `target_migration.jsonl`. When both targets exist, `verify` checks the database, which is canonical.
 - A changed, missing, or extra row fails the check, lists the row IDs, and writes `airlock_verify.json` into the output directory.
 - Anonymized fields stay out of the digests, because their tokens use a run-scoped key that is never stored.
 
@@ -266,7 +268,7 @@ Related options:
 - `repair --decisions decisions.jsonl` applies a decisions file.
 - `python main.py report --output-dir output` rebuilds the report with a Repair outcomes section.
 
-Resume and checkpoint rules are in [docs/repair.md](docs/repair.md).
+Resume and checkpoint rules are in [the guide](docs/guide.md#resume-and-checkpoints).
 
 ### Try real data and measure speed
 
@@ -315,7 +317,7 @@ python scripts/soak_migration.py --rows 1000000 --max-peak-rss-mib 300
 | Doc | Covers |
 | --- | --- |
 | [CLI reference](docs/cli-reference.md) | Every option, output file, size limit, conflict rule, anonymization detail, and the constraints and dynamic-schema formats |
-| [Repair workflow](docs/repair.md) | Session keys, staging, resume behavior, privacy rules |
+| [Guide](docs/guide.md) | Repair sessions, scripted decisions, dry runs, and the air-gap transfer |
 | [Roadmap](docs/roadmap.md) | Planned upgrades and how each one is verified |
 | [Real-data examples](examples/real_data/README.md) | Public datasets, attribution, conversion notes |
 | [Verification skill](.cursor/skills/verify-airlock-db/SKILL.md) | End-to-end checks for this repo, plus a reusable [output verifier](.cursor/skills/verify-airlock-db/scripts/verify_migration_output.py) |
