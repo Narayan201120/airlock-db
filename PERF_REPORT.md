@@ -271,6 +271,24 @@ interleaved new-old trials. Spreads are tight (unlike the Windows box).
   hashing task (same files). Dispatch with the full spec once hashing
   merges.
 
+## Parallel migration: attempted, reverted (2026-10-29)
+
+- A remote agent implemented `--jobs N` exactly to the decided spec
+  (per-file thread tasks, deterministic single-thread merge, `--sample`
+  forces sequential with a warning, anonymize stays merge-thread,
+  1-32 default 1). Parity was perfect: byte-identical DB dumps, JSONL,
+  repair logs, reports, and summaries across duplicate-collapse,
+  resume, sample, and corrupt-file pairs, all verifiers green.
+- But `--jobs 4` measured 19 percent SLOWER than sequential on Linux
+  (0.57 vs 0.48 s, tight spreads over 3 interleaved trials each).
+  Validation is GIL-bound and the merge is single-threaded by design,
+  so threads add contention plus a materialize-then-merge pass with no
+  compensating I/O overlap on warm cache.
+- Decision: reverted, per the no-speculation rule. A correct but slower
+  parallel flag does not belong on a performance branch. The design doc
+  and the negative result stand as the record; revisit only if
+  validation ever releases the GIL. The remote worktree is clean.
+
 ## Risks, skipped items, manual QA
 - Risks: the `_encode_line` rewrite changes transient memory shape (one
   `dumps` string instead of incremental chunks). Inputs are bounded by
