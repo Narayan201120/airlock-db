@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import io
+import itertools
 import os
 import re
 import tempfile
@@ -14,7 +15,7 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterable, Iterator
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from .constraints import FieldRule, ValidationConstraints
 from .pipeline import DriftCategory, MigrationRecordResult
@@ -44,6 +45,12 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"unsupported repair log value: {type(value).__name__}")
 
 
+# Process-unique marker counter for in-flight Decimal literals. Markers never
+# reach the file; they are replaced with the raw literals before the write,
+# so a cheap counter is enough to keep concurrent markers distinct.
+_line_marker_counter = itertools.count()
+
+
 class _RepairLogCapacityReached(Exception):
     """Signal that the total sidecar size limit would be exceeded."""
 
@@ -54,51 +61,50 @@ def _encode_line(
     *,
     max_total_bytes: int | None = None,
 ) -> int:
-    """Encode one object through a spooled file with a hard line-size limit."""
+    """Encode one object with a hard line-size limit."""
 
     decimal_literals: list[str] = []
-    decimal_prefix = f"__AIRLOCK_DB_DECIMAL_{uuid4().hex}_"
+    prefix = ""
 
-    def encode_default(value: Any) -> Any:
-        if isinstance(value, Decimal):
-            literal = str(value)
-            if not value.is_finite() or _DECIMAL_NUMBER.fullmatch(literal) is None:
+    def encode_default(candidate: Any) -> Any:
+        if isinstance(candidate, Decimal):
+            literal = str(candidate)
+            if not candidate.is_finite() or _DECIMAL_NUMBER.fullmatch(literal) is None:
                 raise TypeError("non-finite Decimal cannot be represented in repair JSON")
-            marker = f"{decimal_prefix}{len(decimal_literals)}__"
+            nonlocal prefix
+            if not prefix:
+                prefix = f"__AIRLOCK_DB_DECIMAL_{next(_line_marker_counter)}_"
+            marker = f"{prefix}{len(decimal_literals)}__"
             decimal_literals.append(literal)
             return marker
-        return _json_default(value)
+        return _json_default(candidate)
 
-    encoder = json.JSONEncoder(
+    # One C-level encode instead of a per-chunk Python loop. Inputs are
+    # already bounded by the reader ceilings, so the transient string stays
+    # small; the 8 MiB cap is enforced on the result below.
+    text = json.dumps(
+        value,
         ensure_ascii=True,
         separators=(",", ":"),
         allow_nan=False,
         default=encode_default,
     )
-    with io.BytesIO() as spool:
-        size = 0
-        for chunk in encoder.iterencode(value):
-            encoded = chunk.encode("ascii")
-            size += len(encoded)
-            if size > _MAX_ENTRY_BYTES:
-                raise RepairLogError("repair log entry exceeds the 8 MiB limit")
-            spool.write(encoded)
-        text = spool.getvalue().decode("ascii")
+    if decimal_literals:
         for index, literal in enumerate(decimal_literals):
-            marker_json = json.dumps(f"{decimal_prefix}{index}__", ensure_ascii=True)
+            marker_json = json.dumps(f"{prefix}{index}__", ensure_ascii=True)
             text = text.replace(marker_json, literal)
-        encoded = text.encode("ascii")
-        if len(encoded) + 1 > _MAX_ENTRY_BYTES:
-            raise RepairLogError("repair log entry exceeds the 8 MiB limit")
-        encoded_size = len(encoded) + 1
-        if (
-            max_total_bytes is not None
-            and destination.tell() + encoded_size > max_total_bytes
-        ):
-            raise _RepairLogCapacityReached
-        destination.write(encoded)
-        destination.write(b"\n")
-        return encoded_size
+    encoded = text.encode("ascii")
+    if len(encoded) + 1 > _MAX_ENTRY_BYTES:
+        raise RepairLogError("repair log entry exceeds the 8 MiB limit")
+    encoded_size = len(encoded) + 1
+    if (
+        max_total_bytes is not None
+        and destination.tell() + encoded_size > max_total_bytes
+    ):
+        raise _RepairLogCapacityReached
+    destination.write(encoded)
+    destination.write(b"\n")
+    return encoded_size
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
