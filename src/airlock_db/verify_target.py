@@ -376,6 +376,10 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             insert_expected = insert_sql.format(table="expected")
             insert_stored = insert_sql.format(table="stored")
             accepted = 0
+            # Batch ledger writes: one executemany per chunk instead of one
+            # execute per row. INSERT OR IGNORE/REPLACE keeps the same
+            # first-wins/last-wins collapse accounting as the row loop.
+            pending_expected: list[tuple[str, str]] = []
             try:
                 for result in iter_validated_records(
                     sources,
@@ -396,15 +400,23 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                     accepted += 1
                     dumped = record.model_dump(mode="json")
                     values = [dumped[name] for name in column_names]
-                    ledger.execute(
-                        insert_expected,
+                    pending_expected.append(
                         (
                             str(values[id_index]),
                             _row_digest([values[index] for index in kept_indices]),
-                        ),
+                        )
                     )
+                    if len(pending_expected) >= 5000:
+                        ledger.executemany(insert_expected, pending_expected)
+                        pending_expected.clear()
             except KeyboardInterrupt:
                 return _fail("interrupted before the check completed")
+            if pending_expected:
+                try:
+                    ledger.executemany(insert_expected, pending_expected)
+                except KeyboardInterrupt:
+                    return _fail("interrupted before the check completed")
+                pending_expected.clear()
 
             expected_count = ledger.execute(
                 "SELECT COUNT(*) FROM expected"
@@ -433,13 +445,18 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                         )
                     stored += 1
                     values = [loaded.get(name) for name in column_names]
-                    ledger.execute(
-                        insert_stored,
+                    pending_expected.append(
                         (
                             str(values[id_index]),
                             _row_digest([values[index] for index in kept_indices]),
-                        ),
+                        )
                     )
+                    if len(pending_expected) >= 5000:
+                        ledger.executemany(insert_stored, pending_expected)
+                        pending_expected.clear()
+            if pending_expected:
+                ledger.executemany(insert_stored, pending_expected)
+                pending_expected.clear()
             stored_ids = ledger.execute("SELECT COUNT(*) FROM stored").fetchone()[0]
             collapsed_stored = stored - stored_ids
 
@@ -639,6 +656,7 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                 else transaction_row
             )
             accepted = 0
+            pending_expected_db: list[tuple[str, str]] = []
             try:
                 for result in iter_validated_records(
                     sources,
@@ -658,15 +676,23 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                         continue
                     accepted += 1
                     row = row_builder(record)
-                    ledger.execute(
-                        insert_expected,
+                    pending_expected_db.append(
                         (
                             str(row[id_index]),
                             _row_digest([row[index] for index in kept_indices]),
-                        ),
+                        )
                     )
+                    if len(pending_expected_db) >= 5000:
+                        ledger.executemany(insert_expected, pending_expected_db)
+                        pending_expected_db.clear()
             except KeyboardInterrupt:
                 return _fail("interrupted before the check completed")
+            if pending_expected_db:
+                try:
+                    ledger.executemany(insert_expected, pending_expected_db)
+                except KeyboardInterrupt:
+                    return _fail("interrupted before the check completed")
+                pending_expected_db.clear()
 
             expected_count = ledger.execute(
                 "SELECT COUNT(*) FROM expected"
