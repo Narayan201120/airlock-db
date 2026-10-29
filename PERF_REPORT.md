@@ -178,8 +178,44 @@ changes take the waste that profiling proved (per-row UUID4 plus encoder
 construction plus chunk loop; per-row ledger round trips). Further gains
 without behavior change are in the low single digits.
 
-## Risks, skipped items, manual QA
+## Wave 2 (parallel subagents, merged 2026-10-29)
 
+Three independent optimizations, fanned out to subagents with file-isolated
+scopes, each with paired A/B, byte-parity proof, and E2E verifiers. All three
+were independently re-verified during merge (config check 7, repair summary 8,
+handoff 10, run compare 7, JSONL target 10, budget gate green).
+
+- Eliminate per-row verify ledger lookups (`abbd4f8`): the stored pass of the
+  DB verify path now loads expected digests into one dict instead of per-row
+  SELECT plus DELETE (20k round trips to 1). Timing neutral within box noise;
+  structural win stands on its own. Parity identical modulo timestamp/path,
+  duplicates/tamper/missing cases match.
+- Cache repeated HTML escapes in reports (`010a696`): `_escape` routes
+  through an lru_cache with a fast path returning the input unchanged when
+  none of `&<>"'` is present (provably identical to html.escape output).
+  Interleaved A/B on the render path 6.71 vs 4.09 ms (1.64x); byte-identical
+  HTML on three fixtures plus 33-value escape fuzz.
+- Defer heavy imports on light config paths (`47e149f`): `config_check.py`
+  and `repair_log.py` load schema/pipeline modules lazily (TYPE_CHECKING
+  annotations), so `check --fixed-width` alone never imports pydantic:
+  0.633 to 0.223 s wall (minus 65 percent, every trial below every before
+  trial). Neutral elsewhere as designed. 24-scenario stdout byte-compare
+  green. Note: repair_log has one hardcoded `_BUILTIN_SCHEMA_FIELDS = 9`
+  mirroring the existing `_BUILTIN_SCHEMA_FINGERPRINT` precedent; the
+  `verify_config_check` builtin assertion guards it.
+- orjson experiment: reverted by the subagent with proof. orjson was not
+  installed; after install, mapping showed silent divergences (big-int to
+  float coercion, `1e-400` to 0.0, lone surrogates, depth limits, differing
+  error types), and the only provably-equivalent gate (top-level scalars)
+  fires 0 times on real migration data. Structurally zero benefit, so no
+  fallback code was kept and orjson was uninstalled.
+- Thread-pool parallel migration: design doc delivered (threads over
+  processes with GIL experiment: threads parity to minus 15 percent,
+  processes 2-3x slower at 10k scale; per-file tasks; single-writer merge
+  thread; deterministic merge rules; `--jobs` flag default 1; 8 open
+  questions for maintainer sign-off). No code yet.
+
+## Risks, skipped items, manual QA
 - Risks: the `_encode_line` rewrite changes transient memory shape (one
   `dumps` string instead of incremental chunks). Inputs are bounded by
   reader ceilings (512 KiB per value, 100 issues per entry), so the
