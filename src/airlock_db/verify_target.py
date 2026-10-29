@@ -706,21 +706,23 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
             changed_samples: list[dict[str, str]] = []
             unexpected_samples: list[dict[str, str]] = []
             try:
+                expected_map = {
+                    row[0]: row[1]
+                    for row in ledger.execute("SELECT id, digest FROM expected")
+                }
                 for stored_row in stored_rows:
                     stored += 1
                     row_id = str(stored_row[id_index])
                     digest = _row_digest(
                         [stored_row[index] for index in kept_indices]
                     )
-                    expected = ledger.execute(
-                        "SELECT digest FROM expected WHERE id = ?", (row_id,)
-                    ).fetchone()
-                    if expected is None:
+                    expected_digest = expected_map.pop(row_id, None)
+                    if expected_digest is None:
                         unexpected += 1
                         if len(unexpected_samples) < _DEFAULT_LIMIT_SAMPLES:
                             unexpected_samples.append({"id": row_id})
                         continue
-                    if expected[0] == digest:
+                    if expected_digest == digest:
                         matched += 1
                     else:
                         changed += 1
@@ -728,21 +730,16 @@ def verify_main(argv: Sequence[str] | None = None) -> int:
                             changed_samples.append(
                                 {
                                     "id": row_id,
-                                    "expected_digest": expected[0][:16],
+                                    "expected_digest": expected_digest[:16],
                                     "stored_digest": digest[:16],
                                 }
                             )
-                    ledger.execute("DELETE FROM expected WHERE id = ?", (row_id,))
             except KeyboardInterrupt:
                 return _fail("interrupted before the check completed")
 
-            missing = ledger.execute("SELECT COUNT(*) FROM expected").fetchone()[0]
+            missing = len(expected_map)
             missing_samples = [
-                {"id": row[0]}
-                for row in ledger.execute(
-                    "SELECT id FROM expected ORDER BY id LIMIT ?",
-                    (_DEFAULT_LIMIT_SAMPLES,),
-                )
+                {"id": row_id} for row_id in sorted(expected_map)[:_DEFAULT_LIMIT_SAMPLES]
             ]
         finally:
             ledger.close()
