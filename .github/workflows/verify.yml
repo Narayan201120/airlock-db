@@ -219,6 +219,9 @@ jobs:
           grep -q 'Resumed: 32' ci-resume.log
           python .cursor/skills/verify-airlock-db/scripts/verify_migration_output.py ci-checkpoint \
             --expected-checked 32 --expected-valid 8 --expected-invalid 24 --expected-rows 8
+      - name: Performance budget
+        run: |
+          python scripts/perf_budget.py --work-dir ci-perf-budget
       - if: matrix.os == 'ubuntu-latest'
         name: Air-gap wheelhouse
         run: |
