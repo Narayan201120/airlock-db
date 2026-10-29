@@ -215,6 +215,23 @@ handoff 10, run compare 7, JSONL target 10, budget gate green).
   thread; deterministic merge rules; `--jobs` flag default 1; 8 open
   questions for maintainer sign-off). No code yet.
 
+## Linux confirmation (instabox-narayan-dev-server, 2026-10-29)
+
+Second platform: Linux x86_64, CPython 3.13.5, pydantic 2.14.1, 4 CPUs.
+Branch perf/optimize vs base b630a06 worktree, same venv both sides,
+interleaved new-old trials. Spreads are tight (unlike the Windows box).
+
+- Verify 10k: new 236/254/245 ms vs old 277/265/260 ms. About 8 percent.
+- Invalid 10k migration with repair log: new 228-244 ms (median 234) vs old
+  268-287 ms (median 273). About 14 percent.
+- `check --constraints`: new 38-44 ms (median 40) vs old 92-106 ms (median
+  95). About 58 percent; every new trial below every old trial.
+- Soak 100k valid rows: 1.477 s, 67,684 records/s, peak RSS 39.9 MiB
+  against the 300 MiB budget. No memory concern from the new caches
+  (65k-entry escape cache, 5k-row executemany chunks, one verify digest
+  dict).
+- Budget gate passes: 0.17/0.13/0.13 s for the three workloads.
+
 ## Risks, skipped items, manual QA
 - Risks: the `_encode_line` rewrite changes transient memory shape (one
   `dumps` string instead of incremental chunks). Inputs are bounded by
