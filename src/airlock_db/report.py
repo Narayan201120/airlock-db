@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import html
 import json
 import os
@@ -96,8 +97,21 @@ _MAX_ERROR_ROWS = 10_000
 _MAX_INPUT_PREVIEW_CHARS = 512
 
 
+@functools.lru_cache(maxsize=65536)
+def _escape_text(text: str) -> str:
+    if (
+        "&" not in text
+        and "<" not in text
+        and ">" not in text
+        and '"' not in text
+        and "'" not in text
+    ):
+        return text
+    return html.escape(text, quote=True)
+
+
 def _escape(value: Any) -> str:
-    return html.escape(str(value), quote=True)
+    return _escape_text(str(value))
 
 
 def _format_input(value: Any) -> str:
@@ -135,30 +149,32 @@ def _success_failure_svg(valid: int, invalid: int) -> str:
 
 
 def _render_error_row(row: Mapping[str, Any]) -> str:
-    record_number = row.get("record_number")
+    get = row.get
+    record_number = get("record_number")
     record_text = "Source" if record_number is None else str(record_number)
-    location = row.get("location") or ()
+    location = get("location") or ()
     field_text = ".".join(str(part) for part in location) if location else "—"
-    input_value = row.get("input")
+    input_value = get("input")
     input_text = (
         str(input_value)
-        if row.get("input_is_serialized")
+        if get("input_is_serialized")
         else _format_input(input_value)
     )
+    escape = _escape
     input_details = (
         '<details><summary>View input</summary><pre>'
-        f"{_escape(input_text)}</pre></details>"
+        f"{escape(input_text)}</pre></details>"
         if input_value is not None
         else ""
     )
     return (
         '<tr class="problem">'
-        f'<td class="mono">{_escape(row.get("source", ""))}<br>'
-        f'<span class="quiet">{_escape(record_text)}</span></td>'
-        f'<td><code>{_escape(row.get("code", "error"))}</code><br>'
-        f'<span class="quiet">{_escape(row.get("category", ""))}</span></td>'
-        f'<td class="mono">{_escape(field_text)}</td>'
-        f'<td class="issue-message">{_escape(row.get("message", ""))}{input_details}</td>'
+        f'<td class="mono">{escape(get("source", ""))}<br>'
+        f'<span class="quiet">{escape(record_text)}</span></td>'
+        f'<td><code>{escape(get("code", "error"))}</code><br>'
+        f'<span class="quiet">{escape(get("category", ""))}</span></td>'
+        f'<td class="mono">{escape(field_text)}</td>'
+        f'<td class="issue-message">{escape(get("message", ""))}{input_details}</td>'
         '</tr>'
     )
 
@@ -315,9 +331,10 @@ def render_html_report(
 
     if visible_error_rows:
         rows_by_category: dict[str, list[str]] = {}
+        render_row = _render_error_row
         for row in visible_error_rows:
             category = str(row.get("category", "")) or "uncategorized"
-            rows_by_category.setdefault(category, []).append(_render_error_row(row))
+            rows_by_category.setdefault(category, []).append(render_row(row))
         category_blocks: list[str] = []
         for category, rendered_rows in sorted(rows_by_category.items()):
             issue_word = "issue" if len(rendered_rows) == 1 else "issues"
