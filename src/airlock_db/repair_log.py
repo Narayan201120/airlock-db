@@ -13,11 +13,14 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterable, Iterator
 from uuid import UUID
 
-from .constraints import FieldRule, ValidationConstraints
-from .pipeline import DriftCategory, MigrationRecordResult
+if TYPE_CHECKING:
+    # Deferred so that importing this module (e.g. `repair --summary`, which
+    # only needs RepairLogReader) never pays for Pydantic via .pipeline.
+    from .constraints import FieldRule, ValidationConstraints
+    from .pipeline import DriftCategory, MigrationRecordResult
 
 
 _FORMAT_NAME = "airlock-db-repair-log"
@@ -299,6 +302,8 @@ class RepairLogWriter:
         return redacted
 
     def write_result(self, result: MigrationRecordResult) -> None:
+        from .pipeline import DriftCategory  # deferred: keeps module import light
+
         if self._stream is None or self._closed:
             raise RuntimeError("repair log is not open")
         if result.is_valid:
