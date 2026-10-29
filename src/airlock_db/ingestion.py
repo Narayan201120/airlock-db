@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Iterable, TextIO
 
 from .fixed_width import FixedWidthLayout
-from .source_manifest import SourceManifestCollector
+from .source_manifest import (
+    HashingBinaryReader,
+    SourceManifestCollector,
+    file_digest,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -436,14 +440,240 @@ def check_text_encoding(name: str | None) -> str | None:
     return name
 
 
+def _manifest_single_pass(
+    opener: Callable[..., Any] | None,
+    collector: SourceManifestCollector | None,
+    index: int | None,
+) -> bool:
+    """Whether this open can hash the source file while reading it."""
+
+    return opener is None and collector is not None and index is not None
+
+
+def _finish_hashed(
+    collector: SourceManifestCollector | None,
+    index: int | None,
+    hashing: HashingBinaryReader | None,
+) -> None:
+    """Drain the remainder of a hashed stream and fill its manifest entry."""
+
+    if collector is None or index is None or hashing is None:
+        return
+    try:
+        hashing.drain()
+    except OSError:
+        pass
+    except Exception:
+        pass
+    try:
+        collector.complete(index, hashing.size, hashing.hexdigest())
+    except Exception:
+        pass
+
+
+class _PrefixConcatReader:
+    """Serve a buffered XML prefix once, then the hashed remainder.
+
+    The prefix bytes were already hashed when they were read, so only
+    the remainder passes through the hashing wrapper here.
+    """
+
+    def __init__(self, prefix: bytes, remainder: HashingBinaryReader) -> None:
+        self._prefix = prefix
+        self._offset = 0
+        self._remainder = remainder
+
+    def read(self, size: int = -1) -> bytes:
+        if self._offset < len(self._prefix):
+            if size is None or size < 0:
+                data = self._prefix[self._offset :]
+                self._offset = len(self._prefix)
+                return data
+            data = self._prefix[self._offset : self._offset + size]
+            self._offset += len(data)
+            if len(data) == size or self._offset < len(self._prefix):
+                return bytes(data)
+            rest = self._remainder.read(size - len(data))
+            return bytes(data) + rest
+        return self._remainder.read(size)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+
+def _doctype_from_prefix(prefix: bytes) -> bool:
+    """Mirror the prolog DOCTYPE scan for an already-read prefix."""
+
+    max_prolog_bytes = 1024 * 1024
+    if prefix.startswith(b"\x00\x00\xfe\xff"):
+        text = prefix[4:].decode("utf-32-be", errors="strict")
+    elif prefix.startswith(b"\xff\xfe\x00\x00"):
+        text = prefix[4:].decode("utf-32-le", errors="strict")
+    elif prefix.startswith(b"\xfe\xff"):
+        text = prefix[2:].decode("utf-16-be", errors="strict")
+    elif prefix.startswith(b"\xff\xfe"):
+        text = prefix[2:].decode("utf-16-le", errors="strict")
+    elif prefix.startswith(b"\xef\xbb\xbf"):
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        text = decoder.decode(prefix[3:], final=False)
+    elif prefix.startswith(b"\x00\x00\x00<"):
+        text = prefix.decode("utf-32-be", errors="strict")
+    elif prefix.startswith(b"<\x00\x00\x00"):
+        text = prefix.decode("utf-32-le", errors="strict")
+    elif prefix.startswith(b"\x00<\x00"):
+        text = prefix.decode("utf-16-be", errors="strict")
+    elif prefix.startswith(b"<\x00"):
+        text = prefix.decode("utf-16-le", errors="strict")
+    else:
+        text = prefix.decode("latin-1")
+
+    position = 0
+    while position < len(text):
+        while position < len(text) and text[position].isspace():
+            position += 1
+        if text.startswith("<?", position):
+            end = text.find("?>", position + 2)
+            if end < 0:
+                if len(prefix) == max_prolog_bytes:
+                    raise XMLPrologTooLargeError(
+                        f"XML prolog exceeds {max_prolog_bytes} bytes"
+                    )
+                return False
+            position = end + 2
+            continue
+        if text.startswith("<!--", position):
+            end = text.find("-->", position + 4)
+            if end < 0:
+                if len(prefix) == max_prolog_bytes:
+                    raise XMLPrologTooLargeError(
+                        f"XML prolog exceeds {max_prolog_bytes} bytes"
+                    )
+                return False
+            position = end + 3
+            continue
+        if text.startswith("<!DOCTYPE", position):
+            return True
+        if text[position] == "<":
+            return False
+        return False
+    if len(prefix) == max_prolog_bytes:
+        raise XMLPrologTooLargeError(f"XML prolog exceeds {max_prolog_bytes} bytes")
+    return False
+
+
 def _iter_json_file(
     path: Path,
     *,
     source_labeler: Callable[[str], str] | None = None,
     opener: Callable[..., Any] | None = None,
     encoding: str | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None]:
     number = 0
+    single_pass = _manifest_single_pass(opener, manifest_collector, manifest_index)
+    if single_pass:
+        raw: Any = None
+        hashing: HashingBinaryReader | None = None
+        stream: Any = None
+        try:
+            try:
+                raw = (manifest_path or path).open("rb")
+            except OSError as exc:
+                yield _source_issue(path, None, "io_error", exc, incomplete=False)
+                return
+            hashing = HashingBinaryReader(raw)
+            stream = io.TextIOWrapper(
+                hashing, encoding=encoding or "utf-8-sig", errors="strict"  # type: ignore[arg-type]
+            )
+            try:
+                for value in _iter_json_values(stream):
+                    number += 1
+                    yield InputRecord(str(path), number, value=value)
+                if number == 0:
+                    yield InputRecord(
+                        str(path),
+                        None,
+                        issue=SourceIssue("no_records", "JSON input contains no records."),
+                    )
+            finally:
+                _finish_hashed(manifest_collector, manifest_index, hashing)
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+        except UnicodeError as exc:
+            yield _source_issue(path, None, "encoding_error", exc, incomplete=number > 0)
+        except OSError as exc:
+            yield _source_issue(path, None, "io_error", exc, incomplete=number > 0)
+        except DuplicateJSONKeyError as exc:
+            yield _source_issue(path, number + 1, "duplicate_json_key", exc)
+            if exc.incomplete_array:
+                yield _source_issue(
+                    path,
+                    None,
+                    "json_parse_aborted",
+                    ValueError(f"JSON parsing stopped; remaining array records were not processed: {exc}"),
+                    incomplete=True,
+                )
+        except JSONRecordTooLargeError as exc:
+            yield _source_issue(path, number + 1, "record_too_large", exc)
+            if exc.incomplete_array:
+                yield _source_issue(
+                    path,
+                    None,
+                    "json_parse_aborted",
+                    ValueError(f"JSON parsing stopped; remaining array records were not processed: {exc}"),
+                    incomplete=True,
+                )
+        except InvalidJSONConstantError as exc:
+            yield _source_issue(path, number + 1, "invalid_json_constant", exc)
+            if exc.incomplete_array:
+                yield _source_issue(
+                    path,
+                    None,
+                    "json_parse_aborted",
+                    ValueError(
+                        f"JSON parsing stopped; remaining array records were not processed: {exc}"
+                    ),
+                    incomplete=True,
+                )
+        except JSONTruncatedError as exc:
+            yield _source_issue(
+                path,
+                None,
+                "json_parse_aborted",
+                exc,
+                incomplete=True,
+            )
+        except (JSONDecodeError, ValueError, RecursionError) as exc:
+            if number == 0:
+                yield _source_issue(path, None, "json_decode_error", exc)
+            else:
+                yield _source_issue(
+                    path,
+                    None,
+                    "json_parse_aborted",
+                    ValueError(f"JSON parsing stopped; remaining records were not processed: {exc}"),
+                    incomplete=True,
+                )
+        except Exception as exc:
+            if source_labeler is None:
+                logger.exception("Unexpected JSON reader failure for %s", path)
+            else:
+                logger.error(
+                    "Unexpected JSON reader failure for %s (%s)",
+                    source_labeler(str(path)),
+                    type(exc).__name__,
+                )
+            yield _source_issue(
+                path, None, "json_reader_error", exc, incomplete=number > 0
+            )
+        return
     try:
         open_stream = opener if opener is not None else path.open
         with open_stream(
@@ -653,10 +883,117 @@ def _iter_json_lines(
     source_labeler: Callable[[str], str] | None = None,
     opener: Callable[..., Any] | None = None,
     encoding: str | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None]:
     line_number = 0
     saw_record_line = False
     bom_pending = True
+    single_pass = _manifest_single_pass(opener, manifest_collector, manifest_index)
+    if single_pass:
+        hashing: HashingBinaryReader | None = None
+        try:
+            try:
+                raw = (manifest_path or path).open("rb")
+            except OSError as exc:
+                yield _source_issue(path, None, "io_error", exc, incomplete=False)
+                return
+            hashing = HashingBinaryReader(raw)
+            try:
+                for raw_line, line_size, preview_bytes, oversized in _iter_bounded_jsonl_lines(hashing):
+                    line_number += 1
+                    if bom_pending and line_size:
+                        if raw_line is not None and raw_line.startswith(codecs.BOM_UTF8):
+                            raw_line = raw_line[len(codecs.BOM_UTF8) :]
+                        bom_pending = False
+                    if oversized:
+                        saw_record_line = True
+                        yield InputRecord(
+                            str(path),
+                            line_number,
+                            issue=SourceIssue(
+                                "record_too_large",
+                                f"JSONL record exceeds {_MAX_JSONL_RECORD_BYTES} bytes",
+                                input_value=_line_preview_text(preview_bytes, line_size),
+                            ),
+                        )
+                        continue
+                    try:
+                        assert raw_line is not None
+                        line = raw_line.decode(encoding or "utf-8", errors="strict")
+                    except UnicodeDecodeError as exc:
+                        saw_record_line = True
+                        yield _source_issue(
+                            path,
+                            line_number,
+                            "encoding_error",
+                            exc,
+                            input_value=_line_preview_text(preview_bytes, line_size),
+                        )
+                        continue
+                    if not line or line.isspace():
+                        continue
+                    saw_record_line = True
+                    try:
+                        value = _JSONL_JSON_DECODER.decode(line)
+                    except DuplicateJSONKeyError as exc:
+                        yield _source_issue(
+                            path,
+                            line_number,
+                            "duplicate_json_key",
+                            exc,
+                            input_value=_line_preview_text(preview_bytes, line_size),
+                        )
+                        continue
+                    except InvalidJSONConstantError as exc:
+                        yield _source_issue(
+                            path,
+                            line_number,
+                            "invalid_json_constant",
+                            exc,
+                            input_value=_line_preview_text(preview_bytes, line_size),
+                        )
+                        continue
+                    except (JSONDecodeError, ValueError, RecursionError) as exc:
+                        yield _source_issue(
+                            path,
+                            line_number,
+                            "json_decode_error",
+                            exc,
+                            input_value=_line_preview_text(preview_bytes, line_size),
+                        )
+                        continue
+                    yield InputRecord(str(path), line_number, value=value)
+                if not saw_record_line:
+                    yield InputRecord(
+                        str(path),
+                        None,
+                        issue=SourceIssue("no_records", "JSONL input contains no records."),
+                    )
+            finally:
+                _finish_hashed(manifest_collector, manifest_index, hashing)
+                try:
+                    hashing.close()
+                except Exception:
+                    pass
+        except UnicodeError as exc:
+            yield _source_issue(path, None, "encoding_error", exc, incomplete=line_number > 0)
+        except OSError as exc:
+            yield _source_issue(path, None, "io_error", exc, incomplete=line_number > 0)
+        except Exception as exc:
+            if source_labeler is None:
+                logger.exception("Unexpected JSONL reader failure for %s", path)
+            else:
+                logger.error(
+                    "Unexpected JSONL reader failure for %s (%s)",
+                    source_labeler(str(path)),
+                    type(exc).__name__,
+                )
+            yield _source_issue(
+                path, None, "json_reader_error", exc, incomplete=line_number > 0
+            )
+        return
     try:
         open_stream = opener if opener is not None else path.open
         with open_stream("rb") as stream:
@@ -1565,6 +1902,9 @@ def _iter_csv_file(
     opener: Callable[..., Any] | None = None,
     delimiter: str | None = None,
     encoding: str | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Yield CSV/TSV data rows one row at a time.
 
@@ -1577,6 +1917,126 @@ def _iter_csv_file(
     """
 
     record_number = 0
+    single_pass = _manifest_single_pass(opener, manifest_collector, manifest_index)
+    if single_pass:
+        hashing: HashingBinaryReader | None = None
+        text_stream: Any = None
+        try:
+            csv.field_size_limit(_CSV_FIELD_SIZE_LIMIT)
+            chosen_delimiter = delimiter
+            if chosen_delimiter is None:
+                chosen_delimiter = "\t" if path.suffix.casefold() == ".tsv" else ","
+            header: list[str] | None = None
+            try:
+                raw = (manifest_path or path).open("rb")
+            except OSError as exc:
+                yield _source_issue(path, None, "io_error", exc, incomplete=False)
+                return
+            hashing = HashingBinaryReader(raw)
+            text_stream = io.TextIOWrapper(
+                hashing, encoding=encoding or "utf-8-sig", errors="strict", newline=""  # type: ignore[arg-type]
+            )
+            try:
+                for values in csv.reader(text_stream, delimiter=chosen_delimiter):
+                    if not values:
+                        continue
+                    if header is None:
+                        header = [name.strip() for name in values]
+                        if not any(header):
+                            yield InputRecord(
+                                str(path),
+                                None,
+                                issue=SourceIssue(
+                                    "csv_header_missing",
+                                    "CSV input contains no usable header row.",
+                                ),
+                            )
+                            return
+                        seen: set[str] = set()
+                        duplicate: str | None = None
+                        for name in header:
+                            if name in seen:
+                                duplicate = name
+                                break
+                            seen.add(name)
+                        if duplicate is not None:
+                            yield InputRecord(
+                                str(path),
+                                None,
+                                issue=SourceIssue(
+                                    "csv_duplicate_header",
+                                    f"CSV header repeats the column name {duplicate!r}",
+                                ),
+                            )
+                            return
+                        continue
+                    record_number += 1
+                    if sum(map(len, values)) > _MAX_CSV_RECORD_CHARS:
+                        yield InputRecord(
+                            str(path),
+                            record_number,
+                            issue=SourceIssue(
+                                "record_too_large",
+                                f"CSV row exceeds {_MAX_CSV_RECORD_CHARS} characters",
+                            ),
+                        )
+                        continue
+                    extra = len(values) - len(header)
+                    if extra > 0:
+                        yield InputRecord(
+                            str(path),
+                            record_number,
+                            issue=SourceIssue(
+                                "csv_extra_values",
+                                f"row has {extra} more value(s) than the header defines",
+                            ),
+                        )
+                        continue
+                    yield InputRecord(
+                        str(path),
+                        record_number,
+                        value=(
+                            {
+                                name: (None if value == "" else value)
+                                for name, value in zip(header, values)
+                            }
+                            if "" in values
+                            else dict(zip(header, values))
+                        ),
+                    )
+                if header is None:
+                    yield InputRecord(
+                        str(path),
+                        None,
+                        issue=SourceIssue(
+                            "csv_header_missing", "CSV input contains no usable header row."
+                        ),
+                    )
+            finally:
+                _finish_hashed(manifest_collector, manifest_index, hashing)
+                try:
+                    text_stream.close()
+                except Exception:
+                    pass
+        except UnicodeError as exc:
+            yield _source_issue(path, None, "encoding_error", exc, incomplete=record_number > 0)
+        except OSError as exc:
+            yield _source_issue(path, None, "io_error", exc, incomplete=record_number > 0)
+        except csv.Error as exc:
+            yield _source_issue(path, None, "csv_error", exc, incomplete=record_number > 0)
+        except Exception as exc:
+            if source_labeler is None:
+                logger.exception("Unexpected CSV reader failure for %s", path)
+            else:
+                logger.error(
+                    "Unexpected CSV reader failure for %s (%s)",
+                    source_labeler(str(path)),
+                    type(exc).__name__,
+                )
+            yield _source_issue(
+                path, None, "csv_reader_error", exc, incomplete=record_number > 0
+            )
+        return
     try:
         # Keep the csv module's field cap above the per-row cap so oversized
         # rows are reported row by row; beyond this bound csv.Error is
@@ -1692,6 +2152,9 @@ def _iter_fixed_width_file(
     layout: FixedWidthLayout,
     source_labeler: Callable[[str], str] | None = None,
     opener: Callable[..., Any] | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Yield positional records from one fixed-width text file.
 
@@ -1703,6 +2166,72 @@ def _iter_fixed_width_file(
     """
 
     record_number = 0
+    single_pass = _manifest_single_pass(opener, manifest_collector, manifest_index)
+    if single_pass:
+        hashing: HashingBinaryReader | None = None
+        text_stream: Any = None
+        try:
+            try:
+                raw = (manifest_path or path).open("rb")
+            except OSError as exc:
+                yield _source_issue(path, None, "io_error", exc, incomplete=False)
+                return
+            hashing = HashingBinaryReader(raw)
+            text_stream = io.TextIOWrapper(
+                hashing, encoding=layout.encoding, errors="strict", newline=""  # type: ignore[arg-type]
+            )
+            try:
+                for line_number, line in enumerate(text_stream, start=1):
+                    if line_number <= layout.skip_lines:
+                        continue
+                    text = line.rstrip("\r\n")
+                    if not text.strip():
+                        continue
+                    record_number += 1
+                    if len(text) > _MAX_FIXED_WIDTH_RECORD_CHARS:
+                        yield InputRecord(
+                            str(path),
+                            record_number,
+                            issue=SourceIssue(
+                                "record_too_large",
+                                f"Fixed-width line exceeds {_MAX_FIXED_WIDTH_RECORD_CHARS} characters",
+                            ),
+                        )
+                        continue
+                    if len(text) < layout.record_length:
+                        yield InputRecord(
+                            str(path),
+                            record_number,
+                            issue=SourceIssue(
+                                "fixed_width_short_line",
+                                f"record has {len(text)} column(s); the layout reads up to column {layout.record_length}",
+                            ),
+                        )
+                        continue
+                    yield InputRecord(str(path), record_number, value=layout.split(text))
+            finally:
+                _finish_hashed(manifest_collector, manifest_index, hashing)
+                try:
+                    text_stream.close()
+                except Exception:
+                    pass
+        except UnicodeError as exc:
+            yield _source_issue(path, None, "encoding_error", exc, incomplete=record_number > 0)
+        except OSError as exc:
+            yield _source_issue(path, None, "io_error", exc, incomplete=record_number > 0)
+        except Exception as exc:
+            if source_labeler is None:
+                logger.exception("Unexpected fixed-width reader failure for %s", path)
+            else:
+                logger.error(
+                    "Unexpected fixed-width reader failure for %s (%s)",
+                    source_labeler(str(path)),
+                    type(exc).__name__,
+                )
+            yield _source_issue(
+                path, None, "fixed_width_reader_error", exc, incomplete=record_number > 0
+            )
+        return
     try:
         open_stream = opener if opener is not None else path.open
         with open_stream(
@@ -1764,6 +2293,9 @@ def _records_for_suffix(
     csv_encoding: str | None,
     input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None] | None:
     """Pick the reader for a content suffix, or None when unsupported.
 
@@ -1777,6 +2309,9 @@ def _records_for_suffix(
             layout=fixed_width,
             source_labeler=source_labeler,
             opener=opener,
+            manifest_collector=manifest_collector,
+            manifest_index=manifest_index,
+            manifest_path=manifest_path,
         )
     if suffix == ".json":
         return _iter_json_file(
@@ -1784,6 +2319,9 @@ def _records_for_suffix(
             source_labeler=source_labeler,
             opener=opener,
             encoding=input_encoding,
+            manifest_collector=manifest_collector,
+            manifest_index=manifest_index,
+            manifest_path=manifest_path,
         )
     if suffix in {".jsonl", ".ndjson"}:
         return _iter_json_lines(
@@ -1791,6 +2329,9 @@ def _records_for_suffix(
             source_labeler=source_labeler,
             opener=opener,
             encoding=input_encoding,
+            manifest_collector=manifest_collector,
+            manifest_index=manifest_index,
+            manifest_path=manifest_path,
         )
     if suffix == ".xml":
         return _iter_xml_file(path, source_labeler=source_labeler, opener=opener)
@@ -1801,6 +2342,9 @@ def _records_for_suffix(
             opener=opener,
             delimiter=csv_delimiter,
             encoding=csv_encoding or input_encoding,
+            manifest_collector=manifest_collector,
+            manifest_index=manifest_index,
+            manifest_path=manifest_path,
         )
     return None
 
@@ -1828,6 +2372,182 @@ def _zip_member_opener(archive: Any, member: str) -> Callable[..., Any]:
     return opener
 
 
+class _NonClosingBinary:
+    """Forward reads to gzip without letting a reader close it early."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def readinto(self, buffer: Any) -> int:
+        data = self._stream.read(len(buffer))
+        if not data:
+            return 0
+        buffer[: len(data)] = data
+        return len(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return False
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self) -> _NonClosingBinary:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    @property
+    def closed(self) -> bool:
+        return False
+
+
+def _iter_gzip_single_pass(
+    path: Path,
+    content_suffix: str,
+    *,
+    source_labeler: Callable[[str], str] | None,
+    csv_delimiter: str | None,
+    csv_encoding: str | None,
+    input_encoding: str | None,
+    fixed_width: FixedWidthLayout | None,
+    manifest_collector: SourceManifestCollector,
+    manifest_index: int,
+    manifest_path: Path,
+) -> Generator[InputRecord, None, None]:
+    """Yield gzip member records while hashing the compressed bytes once."""
+
+    import gzip as gzip_module
+
+    hashing: HashingBinaryReader | None = None
+    gz: Any = None
+    if fixed_width is None and content_suffix == ".xml":
+        try:
+            size, digest = file_digest(manifest_path)
+        except OSError:
+            pass
+        else:
+            try:
+                manifest_collector.complete(manifest_index, size, digest)
+            except Exception:
+                pass
+        label = Path(str(path)[: len(str(path)) - len(path.suffix)])
+        records = _records_for_suffix(
+            label,
+            content_suffix,
+            opener=_gzip_opener(path),
+            source_labeler=source_labeler,
+            csv_delimiter=csv_delimiter,
+            csv_encoding=csv_encoding,
+            input_encoding=input_encoding,
+            fixed_width=fixed_width,
+        )
+        if records is not None:
+            try:
+                yield from records
+            finally:
+                records.close()
+        return
+    try:
+        try:
+            raw = manifest_path.open("rb")
+        except OSError as exc:
+            yield _source_issue(path, None, "io_error", exc, incomplete=False)
+            return
+        hashing = HashingBinaryReader(raw)
+        try:
+            gz = gzip_module.GzipFile(fileobj=hashing, mode="rb")
+        except OSError as exc:
+            try:
+                hashing.drain()
+            except OSError:
+                pass
+            try:
+                manifest_collector.complete(
+                    manifest_index, hashing.size, hashing.hexdigest()
+                )
+            except Exception:
+                pass
+            try:
+                hashing.close()
+            except Exception:
+                pass
+            yield _source_issue(path, None, "io_error", exc, incomplete=False)
+            return
+        non_closing = _NonClosingBinary(gz)
+
+        def one_shot_opener(mode: str = "rb", **kwargs: Any) -> Any:
+            if "b" in mode:
+                return non_closing
+            return io.TextIOWrapper(non_closing, **kwargs)  # type: ignore[arg-type]
+
+        label = Path(str(path)[: len(str(path)) - len(path.suffix)])
+        records = _records_for_suffix(
+            label,
+            content_suffix,
+            opener=one_shot_opener,
+            source_labeler=source_labeler,
+            csv_delimiter=csv_delimiter,
+            csv_encoding=csv_encoding,
+            input_encoding=input_encoding,
+            fixed_width=fixed_width,
+        )
+        if records is None:
+            try:
+                hashing.drain()
+            except OSError:
+                pass
+            try:
+                manifest_collector.complete(
+                    manifest_index, hashing.size, hashing.hexdigest()
+                )
+            except Exception:
+                pass
+            return
+        try:
+            yield from records
+        finally:
+            try:
+                records.close()
+            except Exception:
+                pass
+            try:
+                hashing.drain()
+            except OSError:
+                pass
+            except Exception:
+                pass
+            try:
+                manifest_collector.complete(
+                    manifest_index, hashing.size, hashing.hexdigest()
+                )
+            except Exception:
+                pass
+    finally:
+        try:
+            if gz is not None:
+                gz.close()
+        except Exception:
+            pass
+        try:
+            if hashing is not None:
+                hashing.close()
+        except Exception:
+            pass
+
+
 def _iter_archive_file(
     path: Path,
     *,
@@ -1836,6 +2556,9 @@ def _iter_archive_file(
     csv_encoding: str | None = None,
     input_encoding: str | None = None,
     fixed_width: FixedWidthLayout | None = None,
+    manifest_collector: SourceManifestCollector | None = None,
+    manifest_index: int | None = None,
+    manifest_path: Path | None = None,
 ) -> Generator[InputRecord, None, None]:
     """Stream records from a .gz file or a .zip archive without extracting.
 
@@ -1849,6 +2572,16 @@ def _iter_archive_file(
     if suffix == ".gz":
         content_suffix = _effective_suffix(path)
         if fixed_width is None and content_suffix not in SUPPORTED_SUFFIXES:
+            if manifest_collector is not None and manifest_index is not None:
+                try:
+                    size, digest = file_digest(manifest_path or path)
+                except OSError:
+                    pass
+                else:
+                    try:
+                        manifest_collector.complete(manifest_index, size, digest)
+                    except Exception:
+                        pass
             yield InputRecord(
                 str(path),
                 None,
@@ -1856,6 +2589,20 @@ def _iter_archive_file(
                     "unsupported_file_type",
                     f"Unsupported input suffix: {path.suffix or '(none)'}",
                 ),
+            )
+            return
+        if manifest_collector is not None and manifest_index is not None:
+            yield from _iter_gzip_single_pass(
+                path,
+                content_suffix,
+                source_labeler=source_labeler,
+                csv_delimiter=csv_delimiter,
+                csv_encoding=csv_encoding,
+                input_encoding=input_encoding,
+                fixed_width=fixed_width,
+                manifest_collector=manifest_collector,
+                manifest_index=manifest_index,
+                manifest_path=manifest_path or path,
             )
             return
         label = Path(str(path)[: len(str(path)) - len(path.suffix)])
@@ -1982,32 +2729,109 @@ def iter_source_records(
         if isinstance(entry, InputRecord):
             yield entry
             continue
+        suffix = entry.suffix.casefold()
+        single_pass_plain = False
         if source_manifest is not None:
             label = str(entry)
             if source_labeler is not None:
                 label = source_labeler(label)
-            source_manifest.record(entry, label)
-        suffix = entry.suffix.casefold()
-        if suffix in ARCHIVE_SUFFIXES:
-            records = _iter_archive_file(
-                entry,
-                source_labeler=source_labeler,
-                csv_delimiter=csv_delimiter,
-                csv_encoding=csv_encoding,
-                input_encoding=input_encoding,
-                fixed_width=fixed_width,
-            )
+            if suffix == ".gz":
+                # Unsupported gzip still hashes in one streaming read.
+                manifest_index: int | None = source_manifest.begin(entry, label)
+                records = _iter_archive_file(
+                    entry,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                    manifest_collector=source_manifest,
+                    manifest_index=manifest_index,
+                    manifest_path=entry,
+                )
+                # Punch through to the shared drain below.
+                if records is None:
+                    continue
+                try:
+                    for record in records:
+                        yield record
+                finally:
+                    records.close()
+                continue
+            elif suffix == ".zip":
+                source_manifest.record(entry, label)
+            elif fixed_width is not None:
+                single_pass_plain = True
+            elif suffix in {".json", ".jsonl", ".ndjson", ".csv", ".tsv"}:
+                single_pass_plain = True
+            else:
+                source_manifest.record(entry, label)
+            if single_pass_plain:
+                manifest_index = source_manifest.begin(entry, label)
+                records = _records_for_suffix(
+                    entry,
+                    suffix,
+                    opener=None,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                    manifest_collector=source_manifest,
+                    manifest_index=manifest_index,
+                    manifest_path=entry,
+                )
+                if records is None:
+                    try:
+                        size, digest = file_digest(entry)
+                    except OSError:
+                        pass
+                    else:
+                        try:
+                            source_manifest.complete(manifest_index, size, digest)
+                        except Exception:
+                            pass
+            elif suffix in ARCHIVE_SUFFIXES:
+                records = _iter_archive_file(
+                    entry,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                )
+            else:
+                records = _records_for_suffix(
+                    entry,
+                    suffix,
+                    opener=None,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                )
         else:
-            records = _records_for_suffix(
-                entry,
-                suffix,
-                opener=None,
-                source_labeler=source_labeler,
-                csv_delimiter=csv_delimiter,
-                csv_encoding=csv_encoding,
-                input_encoding=input_encoding,
-                fixed_width=fixed_width,
-            )
+            if suffix in ARCHIVE_SUFFIXES:
+                records = _iter_archive_file(
+                    entry,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                )
+            else:
+                records = _records_for_suffix(
+                    entry,
+                    suffix,
+                    opener=None,
+                    source_labeler=source_labeler,
+                    csv_delimiter=csv_delimiter,
+                    csv_encoding=csv_encoding,
+                    input_encoding=input_encoding,
+                    fixed_width=fixed_width,
+                )
         if records is None:
             continue
         try:
