@@ -232,6 +232,22 @@ interleaved new-old trials. Spreads are tight (unlike the Windows box).
   dict).
 - Budget gate passes: 0.17/0.13/0.13 s for the three workloads.
 
+## Parallel migration: decided (2026-10-29, design doc in thread)
+
+- Scope: per-file tasks only (one task per file/table). No intra-file
+  chunking in v1; single huge files get no speedup by construction.
+- `--sample N` with `--jobs N>1`: warn and run single-threaded. Zero waste,
+  exact output, least code.
+- Anonymization stays on the single merge thread. No shared key state.
+- Parity verifier runs on both OSes in CI.
+- Decided without needing input: always pool (no small-file threshold),
+  `--jobs` range 1-32 default 1 with `0` an error, pool covers validate
+  plus transforms on the same thread, single writer thread, deterministic
+  merge in source order.
+- Status: implementation not started. Blocked behind the single-pass
+  hashing task (same files). Dispatch with the full spec once hashing
+  merges.
+
 ## Risks, skipped items, manual QA
 - Risks: the `_encode_line` rewrite changes transient memory shape (one
   `dumps` string instead of incremental chunks). Inputs are bounded by
