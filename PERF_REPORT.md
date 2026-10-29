@@ -232,6 +232,29 @@ interleaved new-old trials. Spreads are tight (unlike the Windows box).
   dict).
 - Budget gate passes: 0.17/0.13/0.13 s for the three workloads.
 
+## Wave 3: single-pass source hashing (remote agent, merged 2026-10-29)
+
+- `Hash sources in a single read pass` (`77e11b5`, +1006/-23 across
+  `ingestion.py` and `source_manifest.py`). New `HashingBinaryReader`
+  wraps the raw binary stream and feeds SHA-256 while reading; manifest
+  entries are reserved with `begin` and filled with `complete`. Plain
+  JSON, JSONL, CSV, TSV, fixed-width, and gzip now read each byte once;
+  zip, XML, and source DBs keep the pre-pass (stated by the agent,
+  accepted). Readers were duplicated per format (new single-pass branch
+  plus the original path for opener/archive cases) rather than refactored,
+  so future reader edits must update both branches.
+- Parity: normalized DB dumps and row counts, repair log, report HTML,
+  and summary JSON byte-identical across clean, messy, array, gz, zip,
+  and CSV corpora (timestamp-only diffs in reports). Verifiers green on
+  merge: source manifest 9, handoff 10, archive input 6, migration
+  output 32/8/24/8, budget gate.
+- Effect: instrumented byte counts show 2.0x file bytes read before,
+  1.0x after. Wall clock neutral on warm cache (0.370 vs 0.369 s median
+  on 10k invalid; run is DB-bound). The win materializes on cold disk,
+  where it halves read I/O by construction. Early-stop runs (`--sample`,
+  previews) still `drain` the remainder to complete the digest, so they
+  read the full file anyway.
+
 ## Parallel migration: decided (2026-10-29, design doc in thread)
 
 - Scope: per-file tasks only (one task per file/table). No intra-file
