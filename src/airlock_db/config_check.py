@@ -11,14 +11,21 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from .constraints import ConstraintConfigError, ValidationConstraints
-from .fixed_width import FixedWidthConfigError, FixedWidthLayout
-from .repair_log import constraints_fingerprint
-from .schema_config import DynamicSchema, SchemaConfigError
-from .schemas import FinancialTransaction
+if TYPE_CHECKING:
+    # Annotation-only imports. check_main() loads each module lazily inside
+    # the flag branch that needs it, so `check --fixed-width` alone never
+    # imports the Pydantic-backed schema modules.
+    from .constraints import ValidationConstraints
+    from .fixed_width import FixedWidthLayout
+    from .schema_config import DynamicSchema
 
 _BUILTIN_SCHEMA_FINGERPRINT = "financial-transaction-v1"
+# Mirrors len(FinancialTransaction.model_fields) without importing the
+# Pydantic-backed schemas module, so `check --fixed-width` alone stays free
+# of Pydantic. Update together with FinancialTransaction.
+_BUILTIN_SCHEMA_FIELDS = 9
 _BUILTIN_RULE_NAMES = (
     "allowed_currencies",
     "allowed_account_ids",
@@ -70,6 +77,8 @@ def check_main(argv: Sequence[str] | None = None) -> int:
 
     dynamic_schema: DynamicSchema | None = None
     if args.config:
+        from .schema_config import DynamicSchema, SchemaConfigError
+
         try:
             dynamic_schema = DynamicSchema.from_file(args.config)
         except SchemaConfigError as exc:
@@ -77,6 +86,8 @@ def check_main(argv: Sequence[str] | None = None) -> int:
 
     constraints: ValidationConstraints | None = None
     if args.constraints:
+        from .constraints import ConstraintConfigError, ValidationConstraints
+
         try:
             constraints = ValidationConstraints.from_file(args.constraints)
         except ConstraintConfigError as exc:
@@ -94,16 +105,17 @@ def check_main(argv: Sequence[str] | None = None) -> int:
 
     layout: FixedWidthLayout | None = None
     if args.fixed_width:
+        from .fixed_width import FixedWidthConfigError, FixedWidthLayout
+
         try:
             layout = FixedWidthLayout.from_file(args.fixed_width)
         except FixedWidthConfigError as exc:
             return _fail(exc)
 
-    schema_fields = (
-        len(dynamic_schema.fields)
-        if dynamic_schema is not None
-        else len(FinancialTransaction.model_fields)
-    )
+    if dynamic_schema is not None:
+        schema_fields = len(dynamic_schema.fields)
+    else:
+        schema_fields = _BUILTIN_SCHEMA_FIELDS
     transform_count = (
         sum(len(rules) for rules in dynamic_schema.transforms.values())
         if dynamic_schema is not None
@@ -126,6 +138,8 @@ def check_main(argv: Sequence[str] | None = None) -> int:
         field_rules = 0
         print("Constraints: none")
     else:
+        from .repair_log import constraints_fingerprint
+
         builtin_rules = sum(
             getattr(constraints, name) is not None for name in _BUILTIN_RULE_NAMES
         )
